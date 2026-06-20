@@ -1,0 +1,40 @@
+{
+  "tweet_id": "2068028794883997721",
+  "url": "https://x.com/DoorDash/status/2068028794883997721",
+  "posted": "2026-06-19T17:51:01Z",
+  "text": "Miami - Last drop!",
+  "city": "Miami",
+  "photos": {
+    "promo1": "photo1.jpg",
+    "map": "photo2.jpg",
+    "location": "photo3.jpg",
+    "promo2": "photo4.jpg"
+  },
+  "analysis": {
+    "warm_zone": "Brickell — circle centered ~SW 13th St / SW 2nd Ave, includes Brickell City Centre, Four Seasons, Brickell Metrorail",
+    "location_clues": [
+      "Under large concrete elevated roadway/bridge",
+      "Pedestrian crosswalk with thick white stripes",
+      "Low angled concrete planter wall with mulch + tropical plants",
+      "Palm tree visible through gap under structure",
+      "Paved plaza/sidewalk"
+    ],
+    "best_guess": {
+      "name": "Brickell City Centre — South Miami Ave underpass / street-level entry",
+      "address": "701 S Miami Ave, Miami, FL 33131",
+      "lat": 25.767392,
+      "lng": -80.192912,
+      "confidence": 0.75,
+      "alternates": [
+        {
+          "name": "Brickell Metromover corridor near SW 11th-13th St",
+          "lat": 25.764,
+          "lng": -80.193,
+          "confidence": 0.55
+        }
+      ],
+      "maps_url": "https://www.google.com/maps/search/?api=1&query=25.767392,-80.192912"
+    },
+    "note": "Drop 2 location is harder — verify via Street View under S Miami Ave bridge at Brickell City Centre first."
+  }
+}

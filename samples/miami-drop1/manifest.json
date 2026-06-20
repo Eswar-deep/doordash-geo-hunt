@@ -1,0 +1,12 @@
+{
+  "tweet_id": "2067973011781607579",
+  "url": "https://x.com/DoorDash/status/2067973011781607579",
+  "text": "MIAMI, today\u2019s plans just got louder.\nA DoorDash bag with FIFA World Cup 2026\u2122 tickets has been delivered somewhere in your city.\nThe address? Classified. Just a warm zone and clue in this post.\nFind the bag & touch it first to win the seats.",
+  "city_hint": "Miami",
+  "files": {
+    "promo1": "samples\\miami-drop1\\photo1.jpg",
+    "map": "samples\\miami-drop1\\photo2.jpg",
+    "location": "samples\\miami-drop1\\photo3.jpg",
+    "promo2": "samples\\miami-drop1\\photo4.jpg"
+  }
+}

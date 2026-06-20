@@ -1,0 +1,179 @@
+﻿{
+    "code":  200,
+    "message":  "OK",
+    "tweet":  {
+                  "url":  "https://x.com/DoorDash/status/2068028794883997721",
+                  "id":  "2068028794883997721",
+                  "text":  "Miamið Last drop!",
+                  "raw_text":  {
+                                   "text":  "Miamið Last drop! https://t.co/rEaDXEAHxh",
+                                   "display_text_range":  [
+                                                              0,
+                                                              17
+                                                          ],
+                                   "facets":  [
+                                                  {
+                                                      "type":  "media",
+                                                      "indices":  [
+                                                                      18,
+                                                                      41
+                                                                  ],
+                                                      "id":  "2068028790068932608",
+                                                      "display":  "pic.x.com/rEaDXEAHxh",
+                                                      "original":  "https://t.co/rEaDXEAHxh",
+                                                      "replacement":  "https://x.com/DoorDash/status/2068028794883997721/photo/1"
+                                                  },
+                                                  {
+                                                      "type":  "media",
+                                                      "indices":  [
+                                                                      18,
+                                                                      41
+                                                                  ],
+                                                      "id":  "2068028790085668864",
+                                                      "display":  "pic.x.com/rEaDXEAHxh",
+                                                      "original":  "https://t.co/rEaDXEAHxh",
+                                                      "replacement":  "https://x.com/DoorDash/status/2068028794883997721/photo/1"
+                                                  },
+                                                  {
+                                                      "type":  "media",
+                                                      "indices":  [
+                                                                      18,
+                                                                      41
+                                                                  ],
+                                                      "id":  "2068028790073110528",
+                                                      "display":  "pic.x.com/rEaDXEAHxh",
+                                                      "original":  "https://t.co/rEaDXEAHxh",
+                                                      "replacement":  "https://x.com/DoorDash/status/2068028794883997721/photo/1"
+                                                  },
+                                                  {
+                                                      "type":  "media",
+                                                      "indices":  [
+                                                                      18,
+                                                                      41
+                                                                  ],
+                                                      "id":  "2068028790064746496",
+                                                      "display":  "pic.x.com/rEaDXEAHxh",
+                                                      "original":  "https://t.co/rEaDXEAHxh",
+                                                      "replacement":  "https://x.com/DoorDash/status/2068028794883997721/photo/1"
+                                                  }
+                                              ]
+                               },
+                  "author":  {
+                                 "screen_name":  "DoorDash",
+                                 "url":  "https://x.com/DoorDash",
+                                 "id":  "1531669496",
+                                 "followers":  256709,
+                                 "following":  1533,
+                                 "likes":  25212,
+                                 "media_count":  2051,
+                                 "name":  "DoorDash",
+                                 "description":  "your backâs not big, itâs beautiful. ð«¶",
+                                 "raw_description":  {
+                                                         "text":  "your backâs not big, itâs beautiful. ð«¶",
+                                                         "facets":  [
+
+                                                                    ]
+                                                     },
+                                 "location":  "San Francisco, CA",
+                                 "banner_url":  "https://pbs.twimg.com/profile_banners/1531669496/1771459829",
+                                 "avatar_url":  "https://pbs.twimg.com/profile_images/2067752894074634240/64emF__1_200x200.jpg",
+                                 "joined":  "Wed Jun 19 18:44:44 +0000 2013",
+                                 "protected":  false,
+                                 "website":  null,
+                                 "verification":  {
+                                                      "verified":  true,
+                                                      "verified_at":  null,
+                                                      "type":  "organization"
+                                                  },
+                                 "avatar_color":  null
+                             },
+                  "replies":  9,
+                  "retweets":  5,
+                  "likes":  40,
+                  "bookmarks":  2,
+                  "quotes":  1,
+                  "created_at":  "Fri Jun 19 17:51:01 +0000 2026",
+                  "created_timestamp":  1781891461,
+                  "possibly_sensitive":  false,
+                  "views":  6888,
+                  "is_note_tweet":  false,
+                  "community_note":  null,
+                  "lang":  "et",
+                  "replying_to":  null,
+                  "replying_to_status":  null,
+                  "media":  {
+                                "all":  [
+                                            {
+                                                "type":  "photo",
+                                                "id":  "2068028790068932608",
+                                                "url":  "https://pbs.twimg.com/media/HLMdOklW8AAgOnI.jpg?name=orig",
+                                                "width":  720,
+                                                "height":  1280
+                                            },
+                                            {
+                                                "type":  "photo",
+                                                "id":  "2068028790085668864",
+                                                "url":  "https://pbs.twimg.com/media/HLMdOkpWUAAJ5xH.jpg?name=orig",
+                                                "width":  720,
+                                                "height":  1280
+                                            },
+                                            {
+                                                "type":  "photo",
+                                                "id":  "2068028790073110528",
+                                                "url":  "https://pbs.twimg.com/media/HLMdOkmWsAAH135.jpg?name=orig",
+                                                "width":  1024,
+                                                "height":  1280
+                                            },
+                                            {
+                                                "type":  "photo",
+                                                "id":  "2068028790064746496",
+                                                "url":  "https://pbs.twimg.com/media/HLMdOkkXEAAPudA.jpg?name=orig",
+                                                "width":  720,
+                                                "height":  1280
+                                            }
+                                        ],
+                                "photos":  [
+                                               {
+                                                   "type":  "photo",
+                                                   "id":  "2068028790068932608",
+                                                   "url":  "https://pbs.twimg.com/media/HLMdOklW8AAgOnI.jpg?name=orig",
+                                                   "width":  720,
+                                                   "height":  1280
+                                               },
+                                               {
+                                                   "type":  "photo",
+                                                   "id":  "2068028790085668864",
+                                                   "url":  "https://pbs.twimg.com/media/HLMdOkpWUAAJ5xH.jpg?name=orig",
+                                                   "width":  720,
+                                                   "height":  1280
+                                               },
+                                               {
+                                                   "type":  "photo",
+                                                   "id":  "2068028790073110528",
+                                                   "url":  "https://pbs.twimg.com/media/HLMdOkmWsAAH135.jpg?name=orig",
+                                                   "width":  1024,
+                                                   "height":  1280
+                                               },
+                                               {
+                                                   "type":  "photo",
+                                                   "id":  "2068028790064746496",
+                                                   "url":  "https://pbs.twimg.com/media/HLMdOkkXEAAPudA.jpg?name=orig",
+                                                   "width":  720,
+                                                   "height":  1280
+                                               }
+                                           ],
+                                "mosaic":  {
+                                               "type":  "mosaic_photo",
+                                               "formats":  {
+                                                               "jpeg":  "https://mosaic.fxtwitter.com/jpeg/2068028794883997721/HLMdOklW8AAgOnI/HLMdOkpWUAAJ5xH/HLMdOkmWsAAH135/HLMdOkkXEAAPudA",
+                                                               "webp":  "https://mosaic.fxtwitter.com/webp/2068028794883997721/HLMdOklW8AAgOnI/HLMdOkpWUAAJ5xH/HLMdOkmWsAAH135/HLMdOkkXEAAPudA"
+                                                           }
+                                           }
+                            },
+                  "source":  "Twitter for iPhone",
+                  "twitter_card":  "summary_large_image",
+                  "color":  null,
+                  "provider":  "twitter",
+                  "reposted_by":  null
+              }
+}

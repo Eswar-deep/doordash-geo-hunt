@@ -1,0 +1,173 @@
+{
+  "url": "https://x.com/DoorDash/status/2067973011781607579",
+  "id": "2067973011781607579",
+  "text": "MIAMI, today\u2019s plans just got louder.\nA DoorDash bag with FIFA World Cup 2026\u2122 tickets has been delivered somewhere in your city.\nThe address? Classified. Just a warm zone and clue in this post.\nFind the bag & touch it first to win the seats.",
+  "raw_text": {
+    "text": "MIAMI, today\u2019s plans just got louder.\nA DoorDash bag with FIFA World Cup 2026\u2122 tickets has been delivered somewhere in your city.\nThe address? Classified. Just a warm zone and clue in this post.\nFind the bag &amp; touch it first to win the seats. https://t.co/huryXWzb97",
+    "display_text_range": [
+      0,
+      246
+    ],
+    "facets": [
+      {
+        "type": "media",
+        "indices": [
+          247,
+          270
+        ],
+        "id": "2067973000528347136",
+        "display": "pic.x.com/huryXWzb97",
+        "original": "https://t.co/huryXWzb97",
+        "replacement": "https://x.com/DoorDash/status/2067973011781607579/photo/1"
+      },
+      {
+        "type": "media",
+        "indices": [
+          247,
+          270
+        ],
+        "id": "2067973000519888896",
+        "display": "pic.x.com/huryXWzb97",
+        "original": "https://t.co/huryXWzb97",
+        "replacement": "https://x.com/DoorDash/status/2067973011781607579/photo/1"
+      },
+      {
+        "type": "media",
+        "indices": [
+          247,
+          270
+        ],
+        "id": "2067973000519958528",
+        "display": "pic.x.com/huryXWzb97",
+        "original": "https://t.co/huryXWzb97",
+        "replacement": "https://x.com/DoorDash/status/2067973011781607579/photo/1"
+      },
+      {
+        "type": "media",
+        "indices": [
+          247,
+          270
+        ],
+        "id": "2067973000532488192",
+        "display": "pic.x.com/huryXWzb97",
+        "original": "https://t.co/huryXWzb97",
+        "replacement": "https://x.com/DoorDash/status/2067973011781607579/photo/1"
+      }
+    ]
+  },
+  "author": {
+    "screen_name": "DoorDash",
+    "url": "https://x.com/DoorDash",
+    "id": "1531669496",
+    "followers": 256850,
+    "following": 1533,
+    "likes": 25212,
+    "media_count": 2056,
+    "name": "DoorDash",
+    "description": "your back\u2019s not big, it\u2019s beautiful. \ud83e\udef6",
+    "raw_description": {
+      "text": "your back\u2019s not big, it\u2019s beautiful. \ud83e\udef6",
+      "facets": []
+    },
+    "location": "San Francisco, CA",
+    "banner_url": "https://pbs.twimg.com/profile_banners/1531669496/1771459829",
+    "avatar_url": "https://pbs.twimg.com/profile_images/2067752894074634240/64emF__1_200x200.jpg",
+    "joined": "Wed Jun 19 18:44:44 +0000 2013",
+    "protected": false,
+    "website": null,
+    "verification": {
+      "verified": true,
+      "verified_at": null,
+      "type": "organization"
+    },
+    "avatar_color": null
+  },
+  "replies": 28,
+  "retweets": 11,
+  "likes": 115,
+  "bookmarks": 12,
+  "quotes": 9,
+  "created_at": "Fri Jun 19 14:09:21 +0000 2026",
+  "created_timestamp": 1781878161,
+  "possibly_sensitive": false,
+  "views": 236564,
+  "is_note_tweet": false,
+  "community_note": null,
+  "lang": "en",
+  "replying_to": null,
+  "replying_to_status": null,
+  "media": {
+    "all": [
+      {
+        "type": "photo",
+        "id": "2067973000528347136",
+        "url": "https://pbs.twimg.com/media/HLLqfMWXQAAxp1-.jpg?name=orig",
+        "width": 3277,
+        "height": 4096
+      },
+      {
+        "type": "photo",
+        "id": "2067973000519888896",
+        "url": "https://pbs.twimg.com/media/HLLqfMUWMAAtQ2r.jpg?name=orig",
+        "width": 3277,
+        "height": 4096
+      },
+      {
+        "type": "photo",
+        "id": "2067973000519958528",
+        "url": "https://pbs.twimg.com/media/HLLqfMUXQAAY2lh.jpg?name=orig",
+        "width": 3277,
+        "height": 4096
+      },
+      {
+        "type": "photo",
+        "id": "2067973000532488192",
+        "url": "https://pbs.twimg.com/media/HLLqfMXWcAA9ebu.jpg?name=orig",
+        "width": 3277,
+        "height": 4096
+      }
+    ],
+    "photos": [
+      {
+        "type": "photo",
+        "id": "2067973000528347136",
+        "url": "https://pbs.twimg.com/media/HLLqfMWXQAAxp1-.jpg?name=orig",
+        "width": 3277,
+        "height": 4096
+      },
+      {
+        "type": "photo",
+        "id": "2067973000519888896",
+        "url": "https://pbs.twimg.com/media/HLLqfMUWMAAtQ2r.jpg?name=orig",
+        "width": 3277,
+        "height": 4096
+      },
+      {
+        "type": "photo",
+        "id": "2067973000519958528",
+        "url": "https://pbs.twimg.com/media/HLLqfMUXQAAY2lh.jpg?name=orig",
+        "width": 3277,
+        "height": 4096
+      },
+      {
+        "type": "photo",
+        "id": "2067973000532488192",
+        "url": "https://pbs.twimg.com/media/HLLqfMXWcAA9ebu.jpg?name=orig",
+        "width": 3277,
+        "height": 4096
+      }
+    ],
+    "mosaic": {
+      "type": "mosaic_photo",
+      "formats": {
+        "jpeg": "https://mosaic.fxtwitter.com/jpeg/2067973011781607579/HLLqfMWXQAAxp1-/HLLqfMUWMAAtQ2r/HLLqfMUXQAAY2lh/HLLqfMXWcAA9ebu",
+        "webp": "https://mosaic.fxtwitter.com/webp/2067973011781607579/HLLqfMWXQAAxp1-/HLLqfMUWMAAtQ2r/HLLqfMUXQAAY2lh/HLLqfMXWcAA9ebu"
+      }
+    }
+  },
+  "source": "Twitter for iPhone",
+  "twitter_card": "summary_large_image",
+  "color": null,
+  "provider": "twitter",
+  "reposted_by": null
+}

@@ -1,0 +1,20 @@
+{
+  "name": "DoorDash Geo Hunt Drop",
+  "description": "Webhook-triggered cloud agent: paste a DoorDash tweet URL, ingest photos, run the full parallel geo-hunt pipeline, return coordinates.",
+  "workflow": {
+    "triggers": [
+      {
+        "webhook": {}
+      }
+    ],
+    "actions": [],
+    "prompts": [
+      "You are running the doordash-geo-hunt repo on a contest drop.\n\nThe message contains a tweet URL in `tweet_url`, `url`, or plain text.\n\nIMPORTANT: Do NOT open x.com or web-search the tweet — X blocks automated access. Use ONLY:\n  python cli.py ingest \"<TWEET_URL>\" --out samples/live-drop --run --tweet-id\n\nSteps:\n1. pip install -e .\n2. Run ingest command above (FxTwitter API — works without browser).\n3. Cloud secrets: GOOGLE_MAPS_API_KEY, MAPILLARY_ACCESS_TOKEN, AWS_BEARER_TOKEN_BEDROCK, VISION_LLM_PROVIDER=bedrock, AWS_BEDROCK_SONNET/OPUS model IDs.\n4. Reply ONLY: lat/lng, confidence, winner agent, Maps link, output JSON path.\n\nFallback if ingest fails: ask user to upload photo2+photo3 and run cli.py run."
+    ],
+    "model": "",
+    "agentOptions": {
+      "skipInstall": false
+    },
+    "memoryEnabled": false
+  }
+}
