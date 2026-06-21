@@ -2,172 +2,300 @@
 
 Multi-agent geolocation pipeline for DoorDash FIFA ticket contest drops.
 
-Given two contest images:
-1. **Map photo** — circular search region
-2. **Location photo** — bag on pedestal + background clues
+Given a **map photo** (red warm-zone circle) and a **location photo** (bag on pedestal + background clues), the system runs **5 agents in parallel**, then a **judge** picks the final lat/lng.
 
-…the system runs **4 agents in parallel**, then a **judge agent** picks the final lat/lng.
+## Quick start (contest day)
+
+```powershell
+# From a tweet URL — ingest photos + run full pipeline
+python cli.py ingest "https://x.com/DoorDash/status/TWEET_ID" --out samples/live-drop --run --tweet-id
+```
+
+DoorDash posts **4 photos** per drop. This project uses:
+
+| File | Role |
+|------|------|
+| `photo1.jpg` | Promo (ignore) |
+| **`photo2.jpg`** | **Map / warm zone** |
+| **`photo3.jpg`** | **Location clue** |
+| `photo4.jpg` | Promo (ignore) |
+
+**Phone workflow:** paste tweet URL + prompt from [`.cursor/agents/contest-day-prompt.txt`](.cursor/agents/contest-day-prompt.txt) into [cursor.com/agents](https://cursor.com/agents). In parallel, attach photos 2+3 in Cursor chat (Opus 4.8) for a faster first pin.
+
+---
 
 ## Architecture
 
 ```mermaid
 flowchart TB
   subgraph input [Input]
-    M[Map screenshot]
+    T[Tweet URL or photos]
+    M[Map photo]
     L[Location photo]
   end
 
-  subgraph extract [Region extraction]
-    R[Circle parser VLM]
+  subgraph ingest [Optional ingest]
+    I[FxTwitter API → photo1–4]
   end
 
-  subgraph agents [Parallel agents]
-    A1[Street View + CLIP matcher]
-    A2[Mapillary + CLIP matcher]
-    A3[VLM Geoguesser]
-    A4[Landmark + OCR]
+  subgraph extract [Region]
+    R[Map circle parser — Sonnet 4.6]
+  end
+
+  subgraph agents [5 parallel agents]
+    A1[Street View + CLIP]
+    A2[Mapillary + CLIP]
+    A3[KartaView + CLIP]
+    A4[VLM geoguesser — Opus 4.6]
+    A5[Landmark + OCR — Sonnet 4.6]
   end
 
   subgraph judge [Judge]
-    J[Vote cluster + Street View verify + VLM judge]
+    J[Cluster votes + Opus 4.6 judge]
   end
 
+  T --> I --> M
+  I --> L
   M --> R
-  L --> A1
-  L --> A2
-  L --> A3
-  L --> A4
-  R --> A1
-  R --> A2
-  R --> A3
-  R --> A4
-  A1 --> J
-  A2 --> J
-  A3 --> J
-  A4 --> J
-  J --> O[Final lat/lng + confidence]
+  L --> A1 & A2 & A3 & A4 & A5
+  R --> A1 & A2 & A3 & A4 & A5
+  A1 & A2 & A3 & A4 & A5 --> J
+  J --> O[Final lat/lng + JSON]
 ```
 
-### Agent 1 — Street View matcher (your original idea)
-- Grid-sample Google Street View inside the circle
-- 4 headings per panorama (0°, 90°, 180°, 270°)
-- CLIP embedding similarity vs cropped location background
+### Agents
 
-### Agent 2 — Mapillary matcher
-- Same CLIP pipeline on Mapillary street-level photos
-- Often captures angles Google lacks (parking lots, alleys)
+| Agent | Method | API |
+|-------|--------|-----|
+| **streetview_matcher** | Grid inside circle → Google Street View → CLIP similarity | `GOOGLE_MAPS_API_KEY` |
+| **mapillary_matcher** | Bbox street photos → CLIP | `MAPILLARY_ACCESS_TOKEN` |
+| **kartaview_matcher** | OpenStreetCam nearby photos → CLIP | None (public API) |
+| **vlm_geoguesser** | Vision LLM reads scene → lat/lng inside circle | Bedrock / Azure / Gemini |
+| **landmark_ocr** | EasyOCR + vision LLM POI matching | Bedrock / Azure / Gemini |
 
-### Agent 2b — KartaView matcher (public, no API key)
-- Uses `POST https://api.openstreetcam.org/1.0/list/nearby-photos/`
-- Queries by circle center + radius, capped at 120 frames
-- Same CLIP matching as Mapillary
-- Note: older image CDN links sometimes 404/502; those frames are skipped automatically
+### Judge
 
-### Agent 3 — VLM Geoguesser
-- Vision LLM reads architecture, storefronts, skyline
-- Proposes lat/lng candidates constrained to the circle
+1. Drop candidates outside the search circle  
+2. Cluster pins within ~40 m; boost multi-agent agreement  
+3. Fetch Street View metadata at top candidates  
+4. Opus-tier vision LLM picks final coordinates from agent summaries + location photo  
 
-### Agent 4 — Landmark + OCR
-- EasyOCR on visible text + VLM POI matching
-- Good when a sign or store name peeks behind the bag
+### Vision LLM routing (`llm_vision.py`)
 
-### Judge agent
-- Filters candidates outside the circle
-- Clusters nearby duplicates; boosts multi-agent agreement
-- Re-fetches Street View at top candidates
-- Vision LLM compares location photo vs Street View panels
+Tiered by step (configurable via env):
 
-## API keys
+| Step | Default model tier |
+|------|-------------------|
+| Map circle | **Sonnet 4.6** |
+| Landmark + OCR | **Sonnet 4.6** |
+| VLM geoguesser | **Opus 4.6** (falls back to Opus 4.5 on Bedrock if 4.6 unavailable) |
+| Judge | **Opus 4.6** (same fallback) |
 
-Copy `.env.example` → `.env`:
+Set `VISION_LLM_PROVIDER=bedrock` (recommended), `gemini`, `azure_openai`, `openai`, or `anthropic`. See [`.env.example`](.env.example).
 
-| Key | Used by | Notes |
-|-----|---------|-------|
-| `GOOGLE_MAPS_API_KEY` | Agents 1, judge | Enable Street View Static + Metadata |
-| `MAPILLARY_ACCESS_TOKEN` | Agent 2 | Free developer tier |
-| *(none)* | KartaView agent | Public API — no key needed |
-| `CURSOR_API_KEY` | Agents 3–4, judge, map parser | Uses Cursor credits |
-| `OPENAI_API_KEY` | Optional fallback | GPT-4o vision if you prefer |
-
-### Other APIs worth adding later
-- **Google Places / Geocoding** — validate OCR text → POI inside circle
-- **Bing Maps Streetside** — extra street-level coverage in some cities
-- **KartaView / OpenStreetCam** — additional free imagery
-- **LoFTR / SuperGlue** — keypoint matcher when CLIP is ambiguous (narrow downtown scenes)
+---
 
 ## Setup
 
+**Requires Python 3.10+** (3.11 recommended).
+
 ```powershell
 cd C:\Users\91767\Projects\doordash-geo-hunt
+
+# Option A: conda (recommended on Windows)
+conda create -n geo-hunt python=3.11 -y
+conda activate geo-hunt
+
+# Option B: venv
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
+
 pip install -e .
 copy .env.example .env
-# edit .env with your keys
+# Edit .env with your API keys
 ```
+
+Verify keys:
+
+```powershell
+python scripts/test_apis.py
+```
+
+---
+
+## Configuration
+
+Copy [`.env.example`](.env.example) → `.env`. Minimum for Bedrock pipeline:
+
+```env
+VISION_LLM_PROVIDER=bedrock
+GOOGLE_MAPS_API_KEY=...
+MAPILLARY_ACCESS_TOKEN=...
+AWS_BEARER_TOKEN_BEDROCK=...
+AWS_BEDROCK_REGION=us-east-1
+AWS_BEDROCK_SONNET_MODEL_ID=us.anthropic.claude-sonnet-4-6
+AWS_BEDROCK_OPUS_MODEL_ID=us.anthropic.claude-opus-4-6
+AWS_BEDROCK_OPUS_FALLBACK_MODEL_ID=us.anthropic.claude-opus-4-5-20251101-v1:0
+```
+
+| Key | Used by |
+|-----|---------|
+| `GOOGLE_MAPS_API_KEY` | Street View grid, judge metadata |
+| `MAPILLARY_ACCESS_TOKEN` | Mapillary CLIP agent |
+| `AWS_BEARER_TOKEN_BEDROCK` | All vision LLM steps (when `VISION_LLM_PROVIDER=bedrock`) |
+| KartaView | No key — public API |
+| `GEMINI_API_KEY` | Alternative vision provider |
+| `AZURE_OPENAI_*` | Alternative vision provider (deploy Sonnet + Opus) |
+
+**Never commit `.env`** — it is gitignored.
+
+---
 
 ## Run
 
-**One command from a tweet URL** (ingest + full pipeline):
+### Tweet ingest + pipeline (one command)
 
 ```powershell
-python cli.py ingest "https://x.com/DoorDash/status/TWEET_ID" --out samples/live-drop --run --tweet-id
+python cli.py ingest "https://x.com/DoorDash/status/TWEET_ID" `
+  --out samples/live-drop `
+  --run `
+  --tweet-id
 ```
 
-Ingest only (download photos):
+Uses **FxTwitter / VxTwitter API** — does not scrape x.com in a browser.
+
+### Ingest only
 
 ```powershell
 python cli.py ingest "https://x.com/DoorDash/status/TWEET_ID" --out samples/live-drop
 ```
 
-Manual photos:
+### Manual photos
 
 ```powershell
 python cli.py run `
-  --map samples/run1/photo2.jpg `
-  --location samples/run1/photo3.jpg `
-  --city "Miami" `
-  --output-json output/run1.json
+  --map samples/miami-drop1/photo2.jpg `
+  --location samples/miami-drop1/photo3.jpg `
+  --city Miami `
+  --output-json output/miami-drop1.json
 ```
 
-Legacy flags still work: `python cli.py --map ... --location ...`
-
-### Contest day from phone (cursor.com/agents)
-
-1. Push this repo to GitHub; connect it to Cloud Agents.
-2. Add cloud secrets (same keys as `.env.example` — Bedrock, Google Maps, Mapillary).
-3. On [cursor.com/agents](https://cursor.com/agents), start an agent on this repo.
-4. Paste the prompt from `.cursor/agents/contest-day-prompt.txt` and replace `PASTE_URL_HERE` with the tweet link.
-
-**In parallel:** open Cursor chat on phone (Opus 4.8), save tweet photos 2+3, attach for a faster first pin while the cloud agent runs.
-
-Optional webhook automation: `.cursor/automation/door-dash-drop.json`
-
-Manual circle (skip map VLM):
+### Skip map LLM (manual circle)
 
 ```powershell
-python cli.py `
-  --map samples/run1/map.jpg `
-  --location samples/run1/location.jpg `
-  --center-lat 30.2672 `
-  --center-lng -97.7431 `
-  --radius-m 600
+python cli.py run `
+  --map samples/miami-drop1/photo2.jpg `
+  --location samples/miami-drop1/photo3.jpg `
+  --center-lat 25.814 `
+  --center-lng -80.197 `
+  --radius-m 800 `
+  --output-json output/manual.json
 ```
+
+Legacy syntax still works: `python cli.py --map ... --location ...`
+
+---
+
+## Contest day (phone + cloud)
+
+1. **Push repo to GitHub** and connect it in [Cursor Cloud Agents](https://cursor.com/dashboard).  
+2. Add **cloud secrets** matching your `.env` keys.  
+3. On [cursor.com/agents](https://cursor.com/agents), start an agent on this repo.  
+4. Paste [`.cursor/agents/contest-day-prompt.txt`](.cursor/agents/contest-day-prompt.txt) with the tweet URL.  
+   - **Do not** ask the agent to open x.com — it must run `cli.py ingest`.  
+5. **In parallel:** Cursor chat (Opus 4.8) with saved photos 2+3 for a fast pin.
+
+Optional webhook automation: [`.cursor/automation/door-dash-drop.json`](.cursor/automation/door-dash-drop.json)
+
+---
 
 ## Output
 
-- Console report with per-agent top candidates
-- `output/result.json` with full structured results + Street View link
+- Console report with per-agent top candidates  
+- `output/<tweet_id>.json` (with `--tweet-id`) or `output/result.json`  
+- Google Maps link printed at the end  
 
-## Phase 2 (next)
+Example structure:
 
-- Cursor SDK orchestrator spawning subagents as separate runs
-- Twitter/X auto-fetch when contest posts drop
-- LoFTR reranker on top-20 CLIP hits
-- SAM-based bag removal for cleaner background matching
+```json
+{
+  "region": { "center_lat": 25.814, "center_lng": -80.197, "radius_m": 800 },
+  "agents": [ ... ],
+  "verdict": { "lat": 25.8142, "lng": -80.1969, "confidence": 0.88 }
+}
+```
+
+---
+
+## Samples
+
+| Folder | Description |
+|--------|-------------|
+| `samples/miami-drop1/` | Design District drop (tweet `2067973011781607579`) |
+| `samples/miami-drop2/` | Brickell drop (tweet `2068028794883997721`) |
+| `samples/live-drop/` | Default output for contest-day ingest |
+
+Test on Miami drop 1:
+
+```powershell
+python cli.py run `
+  --map samples/miami-drop1/photo2.jpg `
+  --location samples/miami-drop1/photo3.jpg `
+  --city Miami `
+  --output-json output/2067973011781607579.json
+```
+
+---
+
+## Scripts
+
+| Script | Purpose |
+|--------|---------|
+| `scripts/test_apis.py` | Smoke-test all API keys |
+| `scripts/probe_models.py` | Test Bedrock vision models |
+| `scripts/probe_bedrock_models.py` | Quick Bedrock model ID probe |
+| `scripts/trigger-drop-webhook.ps1` | POST tweet URL to automation webhook |
+
+---
+
+## Known limitations
+
+- **Opus 4.6** may not be available on all Bedrock accounts — auto-falls back to Opus 4.5.  
+- **CLIP visual matchers** can fail on some Windows setups (torchvision threading); LLM agents still run.  
+- **KartaView CDN** often 404/502 in Miami — agent returns empty gracefully.  
+- **Tweet ingest** requires FxTwitter/VxTwitter; if down, save photos manually from the X app.  
+- **Gemini free tier** may hit quota (429) — use Bedrock as primary.
+
+---
 
 ## Cost tips
 
-- Start with `--center-lat/lng/radius` to skip map VLM call
-- Reduce Street View grid: edit `step_m` in `visual_matcher.py` (40m default)
-- Run only visual agents first; add VLM agents if CLIP disagrees
+- Use `--center-lat/lng/radius` to skip map vision LLM call  
+- Increase Street View grid step in `streetview.py` to reduce API calls  
+- Sonnet for map/OCR + Opus for geoguesser/judge is the default cost/quality balance  
+
+---
+
+## Project layout
+
+```
+cli.py                          # Entry point
+src/doordash_geo_hunt/
+  orchestrator.py               # Parallel agent runner + judge
+  twitter_fetcher.py            # Tweet → photo1–4 via FxTwitter
+  llm_vision.py                 # Tiered vision LLM router
+  map_extractor.py              # Map circle → SearchRegion
+  agents/visual_matcher.py      # CLIP matchers (Street View, Mapillary, KartaView)
+  agents/vlm_agents.py          # Geoguesser + landmark/OCR
+  judge/judge_agent.py          # Vote cluster + final pick
+  matching/clip_matcher.py      # Local CLIP embeddings
+.cursor/agents/                 # Contest-day cloud agent prompt
+.cursor/automation/             # Webhook automation prefill
+samples/                        # Miami test drops
+```
+
+---
+
+## License
+
+Private / personal use. API keys and contest photos are your responsibility.
