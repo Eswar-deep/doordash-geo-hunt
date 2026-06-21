@@ -1,0 +1,12 @@
+{
+  "tweet_id": "2068763866637488227",
+  "url": "https://x.com/doordash/status/2068763866637488227?s=46",
+  "text": "LOS ANGELES!! A DoorDash bag with FIFA World Cup 2026\u2122 tickets has been delivered somewhere in your city.\n\nFind the bag & touch it first to win the seats.\n\nNo purchase necessary. See rules.",
+  "city_hint": "Los Angeles",
+  "files": {
+    "promo1": "samples/live-drop/photo1.jpg",
+    "map": "samples/live-drop/photo2.jpg",
+    "location": "samples/live-drop/photo3.jpg",
+    "promo2": "samples/live-drop/photo4.jpg"
+  }
+}
