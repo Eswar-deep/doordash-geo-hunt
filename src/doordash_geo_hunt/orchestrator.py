@@ -19,7 +19,23 @@ def resolve_region(contest: ContestInput) -> SearchRegion:
     return extract_region_from_map(contest.map_image, city_hint=contest.city_hint)
 
 
+def _warmup_clip() -> None:
+    """Initialize the shared CLIP model (and its heavy torch/torchvision/open_clip
+    imports) on the main thread before the parallel agents start.
+
+    Loading these concurrently from multiple worker threads triggers
+    partially-initialized-module / circular-import errors.
+    """
+    try:
+        from .matching.clip_matcher import get_clip_matcher
+
+        get_clip_matcher()
+    except Exception:  # noqa: BLE001 - individual agents will surface the error
+        pass
+
+
 def _run_all_agents_sync(contest: ContestInput, region: SearchRegion, cache_dir: Path) -> list[AgentResult]:
+    _warmup_clip()
     with ThreadPoolExecutor(max_workers=5) as pool:
         futures = [
             pool.submit(run_streetview_matcher, contest, region, cache_dir),

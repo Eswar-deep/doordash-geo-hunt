@@ -8,7 +8,7 @@ from PIL import Image
 from ..geo import cluster_candidates
 from ..kartaview import KartaViewClient
 from ..mapillary import MapillaryClient
-from ..matching.clip_matcher import ClipMatcher
+from ..matching.clip_matcher import get_clip_matcher
 from ..models import AgentName, AgentResult, ContestInput, LocationCandidate, SearchRegion
 from ..preprocessing import crop_location_background, enhance_for_matching, load_rgb, resize_max_side
 
@@ -31,7 +31,7 @@ def run_streetview_matcher(
         from ..streetview import StreetViewClient
 
         client = StreetViewClient()
-        matcher = ClipMatcher()
+        matcher = get_clip_matcher()
         query = _query_image(contest)
         sv_cache = (cache_dir / "streetview") if cache_dir else None
         samples = client.sample_panoramas(region, step_m=step_m, cache_dir=sv_cache)
@@ -73,7 +73,7 @@ def run_kartaview_matcher(
     started = time.time()
     try:
         client = KartaViewClient()
-        matcher = ClipMatcher()
+        matcher = get_clip_matcher()
         query = _query_image(contest)
         kv_cache = (cache_dir / "kartaview") if cache_dir else None
         samples = client.images_in_region(region, cache_dir=kv_cache)
@@ -114,7 +114,7 @@ def run_mapillary_matcher(
     started = time.time()
     try:
         client = MapillaryClient()
-        matcher = ClipMatcher()
+        matcher = get_clip_matcher()
         query = _query_image(contest)
         m_cache = (cache_dir / "mapillary") if cache_dir else None
         samples = client.images_in_region(region, cache_dir=m_cache)
