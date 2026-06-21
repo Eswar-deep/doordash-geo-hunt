@@ -17,11 +17,19 @@ update script (`pip install -e .`), so you should not need to install anything m
 
 ### API keys are required for a real verdict (non-obvious)
 - The pipeline only produces a final verdict if at least one **vision-LLM provider** is
-  configured (`GEMINI_API_KEY` is the free-tier, README-recommended option; AWS Bedrock,
-  Anthropic, OpenAI, or Azure OpenAI also work). Optional: `GOOGLE_MAPS_API_KEY` and
-  `MAPILLARY_ACCESS_TOKEN` for the visual-matcher agents.
+  configured (`GEMINI_API_KEY`, AWS Bedrock via `AWS_BEARER_TOKEN_BEDROCK`, Anthropic,
+  OpenAI, or Azure OpenAI). Optional: `GOOGLE_MAPS_API_KEY` and `MAPILLARY_ACCESS_TOKEN`
+  for the visual-matcher agents.
 - Configure keys via repo `.env` (copy `.env.example`) or as environment variables; the
-  CLI loads `.env` via `python-dotenv`.
+  CLI loads `.env` via `python-dotenv` (it does NOT override already-set env vars).
+- **Provider-selection gotcha:** when `VISION_LLM_PROVIDER` is unset, `llm_vision.active_vision_provider()`
+  auto-picks the first provider whose key is present, checking `GEMINI_API_KEY` **before**
+  Bedrock. The cloud secrets in this environment include a `GEMINI_API_KEY` whose billing
+  is depleted (every Gemini model returns `429 "prepayment credits are depleted"`). To use
+  the working Bedrock key you MUST set `VISION_LLM_PROVIDER=bedrock` — e.g. in a local
+  `.env` (gitignored, so recreate it as needed) or as an env var. The default Bedrock Opus
+  model id is invalid on this account, but the code auto-falls back to the configured Opus
+  fallback (`AWS_BEDROCK_OPUS_FALLBACK_MODEL_ID`), which works.
 - With **no** keys configured, all 5 agents fail gracefully and the judge raises
   `No in-circle candidates from any agent`, so the pipeline exits non-zero. This is the
   expected keyless behavior, not a bug. `python scripts/test_apis.py` smoke-tests whichever
