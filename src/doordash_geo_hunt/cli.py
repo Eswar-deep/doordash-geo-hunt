@@ -66,7 +66,7 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sv-refine-span", type=int, default=30)
     parser.add_argument("--sv-refine-step", type=int, default=10)
     parser.add_argument("--sv-pitch-refine", default="0,-10")
-    parser.add_argument("--sv-max-frames", type=int, default=1000)
+    parser.add_argument("--sv-max-frames", type=int, default=3000)
     parser.add_argument("--sv-step-m", type=float, default=None)
     parser.add_argument("--sv-cache", action="store_true", default=False, help="Dev only: cache SV frames")
 
@@ -126,20 +126,25 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
 
 
 _STAGE_TITLES = {
+    "p1": "P1 VERDICT",
+    "p2": "P2 VERDICT",
+    "p3": "P3 VERDICT",
+    "p3_final": "P3 FINAL VERDICT",
     "p1_fast": "P1 FAST VERDICT",
     "p2_clip": "P2 CLIP VERDICT",
-    "p3_final": "P3 FINAL VERDICT",
 }
 
 
 def _print_stage(stage: str, verdict: FinalVerdict) -> None:
     winner = verdict.winner_agent.value if verdict.winner_agent else "ensemble"
-    print(f"\n=== {_STAGE_TITLES.get(stage, stage.upper())} ===")
+    title = _STAGE_TITLES.get(stage, f"{stage.upper()} VERDICT")
+    prov = " (PROVISIONAL)" if verdict.provisional else ""
+    print(f"\n=== {title}{prov} ===")
     print(
         f"lat: {verdict.lat:.6f}  lng: {verdict.lng:.6f}  "
         f"confidence: {verdict.confidence:.3f}  agent: {winner}"
     )
-    if stage == "p3_final":
+    if not verdict.provisional:
         if verdict.street_view_url:
             print(f"Street View: {verdict.street_view_url}")
         print(f"Reasoning: {verdict.reasoning}")

@@ -1,4 +1,12 @@
-DoorDash FIFA drop — run the geo-hunt pipeline.
+DoorDash FIFA drop — geo-hunt pipeline (cloud agent).
+
+== PREWARM (send this FIRST, morning of contest day) ==
+
+pip install -e . && python3 cli.py prewarm
+
+Wait for "Prewarm complete" before sending the drop command below.
+
+== DROP (send in the SAME session when tweet goes live) ==
 
 Tweet URL:
 PASTE_URL_HERE
@@ -9,15 +17,16 @@ IMPORTANT:
 - ONLY use our ingest script (FxTwitter API inside the repo).
 
 In repo root:
-1. pip install -e .
-2. python cli.py ingest "PASTE_URL_HERE" --out samples/live-drop --run --tweet-id
+python3 cli.py ingest "PASTE_URL_HERE" --out samples/live-drop --run --tweet-id --agents streetview,vlm --staged --staged-parallel --sv-workers 32
 
 If ingest fails, retry once. If still failing, tell the user to save photo 2 (map) and photo 3 (clue) from the X app and run:
-  python cli.py run --map PATH/photo2.jpg --location PATH/photo3.jpg --city CITY --output-json output/live.json
+  python3 cli.py run --map PATH/photo2.jpg --location PATH/photo3.jpg --city CITY --output-json output/live.json --agents streetview,vlm --staged --staged-parallel --sv-workers 32
 
-Reply with ONLY:
-- Final lat/lng
+Reply with ALL verdicts as they print (P1, P2, P3) — do not wait for the final to share earlier results:
+- Stage (P1/P2/P3)
+- lat/lng
 - Confidence
 - Winner agent
 - Google Maps link: https://www.google.com/maps?q=LAT,LNG
-- Path to output JSON
+- Street View link (P3 only)
+- Path to output JSON (final only)

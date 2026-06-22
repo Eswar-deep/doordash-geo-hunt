@@ -46,21 +46,58 @@ def _build_tasks(
     pitch: float = 0.0,
     cap: int | None = None,
 ) -> list[dict]:
-    tasks: list[dict] = []
-    for pano in panos:
-        for h in headings:
-            tasks.append(
-                {
-                    "lat": pano["lat"],
-                    "lng": pano["lng"],
-                    "heading": float(h),
-                    "pitch": float(pitch),
+    """Build fetch tasks with maximum angular diversity per pano.
+
+    When cap < panos×headings, each pano gets a subset of headings that are
+    evenly spread across 360° (not clustered at the start of the list). This
+    ensures every pano covers all directions even under a tight frame budget.
+    """
+    if not panos or not headings:
+        return []
+    import random
+    shuffled = list(panos)
+    random.shuffle(shuffled)
+
+    if cap is None or cap >= len(shuffled) * len(headings):
+        # No cap pressure — give every pano all headings.
+        tasks: list[dict] = []
+        for pano in shuffled:
+            for h in headings:
+                tasks.append({
+                    "lat": pano["lat"], "lng": pano["lng"],
+                    "heading": float(h), "pitch": float(pitch),
                     "pano_id": pano.get("pano_id"),
-                }
-            )
-            if cap is not None and len(tasks) >= cap:
-                return tasks
-    return tasks
+                })
+        return tasks[:cap] if cap else tasks
+
+    # Cap is binding — distribute headings evenly per pano.
+    n_per_pano = max(1, cap // len(shuffled))
+    n_headings = len(headings)
+    tasks = []
+    for i, pano in enumerate(shuffled):
+        stride = max(1, n_headings // n_per_pano)
+        offset = i % stride
+        selected = headings[offset::stride][:n_per_pano]
+        for h in selected:
+            tasks.append({
+                "lat": pano["lat"], "lng": pano["lng"],
+                "heading": float(h), "pitch": float(pitch),
+                "pano_id": pano.get("pano_id"),
+            })
+    # Fill remaining budget with extra headings for the first panos.
+    if len(tasks) < cap:
+        used = {(t["pano_id"], t["heading"]) for t in tasks}
+        for pano in shuffled:
+            for h in headings:
+                if (pano.get("pano_id"), float(h)) not in used:
+                    tasks.append({
+                        "lat": pano["lat"], "lng": pano["lng"],
+                        "heading": float(h), "pitch": float(pitch),
+                        "pano_id": pano.get("pano_id"),
+                    })
+                    if len(tasks) >= cap:
+                        return tasks
+    return tasks[:cap]
 
 
 def run_streetview_matcher(
@@ -81,98 +118,53 @@ def run_streetview_matcher(
         query_vec = matcher.embed(ctx.query_image)
         sv_cache = (cache_dir / "streetview") if (cache_dir and cfg.cache) else None
 
-        all_scores: list = []  # MatchScore objects across passes
+        all_scores: list = []
         frames_fetched = 0
 
-        if cfg.coarse_fine:
-            # ---- Pass 1: coarse, wide FOV, full circle -----------------------
-            coarse_step = cfg.step_m or max(60.0, region.radius_m / 10.0)
-            panos = client.list_panoramas(
-                region, step_m=coarse_step, max_panos=600, workers=cfg.workers
-            )
-            coarse_headings = headings_evenly(cfg.headings_coarse)
-            tasks1 = _build_tasks(panos, coarse_headings, cap=cfg.max_frames // 2)
-            _log(f"[sv] pass1 panos={len(panos)} frames={len(tasks1)}")
-            frames1 = client.fetch_frames(
-                tasks1, fov=cfg.fov_coarse, workers=cfg.workers, cache_dir=sv_cache, label="sv pass1"
-            )
-            frames_fetched += len(tasks1)
-            ranked1 = matcher.rank_batched(
-                query_vec, frames1, top_k=50, batch_size=cfg.clip_batch_size
-            )
-            all_scores.extend(ranked1)
+        # ---- Exhaustive pass: ALL panos × N headings, parallel ----------------
+        step = cfg.step_m or max(30.0, region.radius_m / 20.0)
+        panos = client.list_panoramas(region, step_m=step, max_panos=cfg.max_panos, workers=cfg.workers)
+        n_headings = _heading_count(cfg, default=cfg.headings)
+        hdgs = headings_evenly(n_headings)
+        tasks = _build_tasks(panos, hdgs, cap=cfg.max_frames)
+        _log(f"[sv] exhaustive panos={len(panos)} headings={n_headings} frames={len(tasks)}")
+        frames = client.fetch_frames(
+            tasks, fov=cfg.fov_fine, workers=cfg.workers, cache_dir=sv_cache, label="sv"
+        )
+        frames_fetched += len(tasks)
+        all_scores = list(matcher.rank_batched(
+            query_vec, frames, top_k=80, batch_size=cfg.clip_batch_size
+        ))
 
-            # ---- Pass 2: fine, narrow FOV, around top-5 coarse hits ----------
-            top5 = cluster_scored_points(
-                [(m.lat, m.lng, m.score, m.heading) for m in ranked1], merge_radius_m=30.0
-            )[:5]
-            remaining = max(0, cfg.max_frames - frames_fetched)
-            if top5 and remaining > 0:
-                near = client.panoramas_near(
-                    [(p.lat, p.lng) for p in top5],
-                    region=region,
-                    radius_m=60.0,
-                    step_m=cfg.step_m or 25.0,
-                    max_panos=200,
-                    workers=cfg.workers,
-                )
-                fine_headings = headings_evenly(cfg.headings_fine)
-                tasks2 = _build_tasks(near, fine_headings, cap=remaining)
-                _log(f"[sv] pass2 panos={len(near)} frames={len(tasks2)} headings={cfg.headings_fine}")
-                frames2 = client.fetch_frames(
-                    tasks2, fov=cfg.fov_fine, workers=cfg.workers, cache_dir=sv_cache, label="sv pass2"
-                )
-                frames_fetched += len(tasks2)
-                ranked2 = matcher.rank_batched(
-                    query_vec, frames2, top_k=50, batch_size=cfg.clip_batch_size
-                )
-                all_scores.extend(ranked2)
-
-            # ---- Pass 3: heading + pitch refine on top-3 panos ---------------
-            if cfg.refine_headings and all_scores:
-                top3 = sorted(all_scores, key=lambda m: m.score, reverse=True)[:3]
-                refine_tasks: list[dict] = []
-                for m in top3:
-                    base = int(m.heading) if m.heading is not None else 0
-                    span, step = cfg.refine_span, max(1, cfg.refine_step)
-                    refine_headings = list(range(base - span, base + span + 1, step))
-                    for h in refine_headings:
-                        for pitch in cfg.pitch_refine:
-                            refine_tasks.append(
-                                {
-                                    "lat": m.lat,
-                                    "lng": m.lng,
-                                    "heading": float(h % 360),
-                                    "pitch": float(pitch),
-                                    "pano_id": m.source_id or None,
-                                }
-                            )
-                refine_tasks = refine_tasks[: cfg.refine_max_frames]
-                if refine_tasks:
-                    _log(f"[sv] refine frames={len(refine_tasks)} span={cfg.refine_span} step={cfg.refine_step}")
-                    frames3 = client.fetch_frames(
-                        refine_tasks, fov=cfg.fov_fine, workers=cfg.workers,
-                        cache_dir=sv_cache, label="sv refine",
+        # ---- Refine: top-1 pano with heading ± span + pitch -------------------
+        if cfg.refine_headings and all_scores:
+            top1 = all_scores[0]
+            base = int(top1.heading) if top1.heading is not None else 0
+            span, rstep = cfg.refine_span, max(1, cfg.refine_step)
+            refine_tasks: list[dict] = []
+            for h in range(base - span, base + span + 1, rstep):
+                for pitch in cfg.pitch_refine:
+                    refine_tasks.append(
+                        {
+                            "lat": top1.lat,
+                            "lng": top1.lng,
+                            "heading": float(h % 360),
+                            "pitch": float(pitch),
+                            "pano_id": top1.source_id or None,
+                        }
                     )
-                    frames_fetched += len(refine_tasks)
-                    ranked3 = matcher.rank_batched(
-                        query_vec, frames3, top_k=50, batch_size=cfg.clip_batch_size
-                    )
-                    all_scores.extend(ranked3)
-        else:
-            # ---- Single pass over the full circle ----------------------------
-            n = _heading_count(cfg, default=8)
-            step = cfg.step_m or 40.0
-            panos = client.list_panoramas(region, step_m=step, max_panos=600, workers=cfg.workers)
-            tasks = _build_tasks(panos, headings_evenly(n), cap=cfg.max_frames)
-            _log(f"[sv] single-pass panos={len(panos)} frames={len(tasks)} headings={n}")
-            frames = client.fetch_frames(
-                tasks, fov=cfg.fov_fine, workers=cfg.workers, cache_dir=sv_cache, label="sv"
-            )
-            frames_fetched += len(tasks)
-            all_scores = matcher.rank_batched(
-                query_vec, frames, top_k=80, batch_size=cfg.clip_batch_size
-            )
+            refine_tasks = refine_tasks[: cfg.refine_max_frames]
+            if refine_tasks:
+                _log(f"[sv] refine top-1 frames={len(refine_tasks)} span={span} step={rstep}")
+                frames_r = client.fetch_frames(
+                    refine_tasks, fov=cfg.fov_fine, workers=cfg.workers,
+                    cache_dir=sv_cache, label="sv refine",
+                )
+                frames_fetched += len(refine_tasks)
+                ranked_r = matcher.rank_batched(
+                    query_vec, frames_r, top_k=10, batch_size=cfg.clip_batch_size
+                )
+                all_scores.extend(ranked_r)
 
         if not all_scores:
             return AgentResult(

@@ -103,14 +103,23 @@ def test_crop_location_background_shapes():
 def test_ingest_classify(tmp_path):
     from doordash_geo_hunt.twitter_fetcher import classify_photos
 
+    # photo1 = dark promo
     Image.fromarray(np.zeros((500, 500, 3), dtype=np.uint8)).save(tmp_path / "photo1.jpg")
+    # photo2 = map with a red zone (moderate redness ~0.2)
+    map_img = np.full((500, 500, 3), 180, dtype=np.uint8)
+    map_img[100:300, 100:300, 0] = 220  # red zone in center
+    map_img[100:300, 100:300, 1] = 60
+    map_img[100:300, 100:300, 2] = 60
+    Image.fromarray(map_img).save(tmp_path / "photo2.jpg")
+    # photo3 = location clue (neutral)
+    Image.fromarray(np.full((600, 600, 3), 120, dtype=np.uint8)).save(tmp_path / "photo3.jpg")
+    # photo4 = solid red promo (reddest overall — but classifier should NOT pick it)
     red = np.zeros((500, 500, 3), dtype=np.uint8)
     red[..., 0] = 220
-    Image.fromarray(red).save(tmp_path / "photo2.jpg")
-    Image.fromarray(np.full((600, 600, 3), 120, dtype=np.uint8)).save(tmp_path / "photo3.jpg")
-    Image.fromarray(np.zeros((300, 300, 3), dtype=np.uint8)).save(tmp_path / "photo4.jpg")
+    Image.fromarray(red).save(tmp_path / "photo4.jpg")
 
     res = classify_photos(tmp_path)
+    # Canonical order wins: photo2=map, photo3=location (even though photo4 is redder)
     assert res["map"] == tmp_path / "photo2.jpg"
     assert res["location"] == tmp_path / "photo3.jpg"
 

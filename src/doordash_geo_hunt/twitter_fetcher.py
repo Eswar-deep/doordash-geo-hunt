@@ -152,18 +152,6 @@ def download_tweet_media(tweet: ParsedTweet, output_dir: Path, workers: int = 4)
     return tweet
 
 
-def _redness(path: Path) -> float:
-    """Fraction of pixels where red clearly dominates (proxy for the warm map zone)."""
-    try:
-        img = Image.open(path).convert("RGB")
-    except Exception:  # noqa: BLE001
-        return 0.0
-    arr = np.asarray(img.resize((128, 128)), dtype=np.int16)
-    r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
-    warm = (r > g + 25) & (r > b + 25)
-    return float(warm.mean())
-
-
 def _dims(path: Path) -> tuple[int, int]:
     try:
         with Image.open(path) as img:
@@ -172,37 +160,78 @@ def _dims(path: Path) -> tuple[int, int]:
         return (0, 0)
 
 
+def _map_score(path: Path) -> float:
+    """Score how likely a photo is the MAP (red zone on a map background).
+
+    A real map has: (1) significant red/warm area AND (2) non-red regions with
+    map-like muted tones (gray/green/white streets). Pure red promo graphics
+    score lower because their non-red area is small or also saturated.
+    """
+    try:
+        img = Image.open(path).convert("RGB")
+    except Exception:  # noqa: BLE001
+        return 0.0
+    arr = np.asarray(img.resize((128, 128)), dtype=np.int16)
+    r, g, b = arr[..., 0], arr[..., 1], arr[..., 2]
+    warm = (r > g + 25) & (r > b + 25)
+    warm_frac = float(warm.mean())
+    # Map backgrounds have a mix of warm zone + muted map tiles. A pure red
+    # promo graphic has warm_frac > 0.5 (mostly solid red/warm). The map sweet
+    # spot is 0.05–0.45 (circular zone on a neutral map).
+    if warm_frac > 0.55:
+        return warm_frac * 0.4  # penalize — likely a full-bleed promo graphic
+    return warm_frac
+
+
 def classify_photos(output_dir: Path) -> dict:
     """Identify map (warm/red circle) vs location clue among the 4 photos.
 
-    Heuristic: the map screenshot has the highest 'redness'. The location clue is
-    the largest remaining non-map photo. Falls back to photo2=map, photo3=location.
+    DoorDash Seat Drops follow a consistent 4-photo grid:
+      photo1 = promo (ticket tag)
+      photo2 = MAP (warm zone circle on a map)
+      photo3 = LOCATION CLUE (bag on pedestal with background)
+      photo4 = promo (GO FIND THEM)
+
+    The classifier defaults to this canonical order and only overrides photo2 as
+    the map if another photo scores substantially higher on the map heuristic AND
+    photo2 scores very low (i.e. clearly not a map).
     """
     photos = [output_dir / f"photo{i}.jpg" for i in range(1, 5)]
     for p in photos:
         if not p.exists():
             raise FileNotFoundError(f"Expected {p}")
 
-    reds = {p: _redness(p) for p in photos}
-    map_path = max(photos, key=lambda p: reds[p])
-    map_conf = reds[map_path]
+    scores = {p: _map_score(p) for p in photos}
+    canonical_map = output_dir / "photo2.jpg"
+    canonical_loc = output_dir / "photo3.jpg"
 
-    remaining = [p for p in photos if p != map_path]
-    # Location clue: largest remaining (promos are usually graphic/smaller crops).
-    loc_path = max(remaining, key=lambda p: _dims(p)[0] * _dims(p)[1])
+    best_map = max(photos, key=lambda p: scores[p])
+    best_score = scores[best_map]
+    canonical_score = scores[canonical_map]
 
-    # Guard against a weak signal — fall back to the canonical grid order.
-    if map_conf < 0.04:
-        map_path = output_dir / "photo2.jpg"
-        loc_path = output_dir / "photo3.jpg"
-        confidence = 0.3
+    # Only override canonical if:
+    #   (a) canonical photo2 has almost no red (< 0.03), AND
+    #   (b) the best alternative scores significantly higher (> 2x).
+    # Otherwise trust the fixed grid order — DoorDash hasn't changed it.
+    if canonical_score < 0.03 and best_score > canonical_score * 2 and best_map != canonical_map:
+        map_path = best_map
+        confidence = round(min(0.9, 0.4 + best_score), 3)
     else:
-        confidence = round(min(0.95, 0.5 + map_conf), 3)
+        map_path = canonical_map
+        confidence = round(min(0.95, 0.5 + canonical_score), 3) if canonical_score > 0.03 else 0.5
+
+    # Location is always photo3 unless photo3 IS the map (extremely unlikely).
+    if canonical_loc == map_path:
+        loc_path = max(
+            [p for p in photos if p != map_path],
+            key=lambda p: _dims(p)[0] * _dims(p)[1],
+        )
+    else:
+        loc_path = canonical_loc
 
     lw, lh = _dims(loc_path)
     if lw < 400 or lh < 400:
-        # Location too small — fall back to canonical clue slot.
-        fallback = output_dir / "photo3.jpg"
+        fallback = canonical_loc if canonical_loc != map_path else output_dir / "photo2.jpg"
         if _dims(fallback)[0] >= 400:
             loc_path = fallback
 

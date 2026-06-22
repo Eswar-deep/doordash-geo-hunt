@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import sys
 import time
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
@@ -174,10 +174,11 @@ def _interim_verdict(
         return None
     best = clustered[0]
     votes = max((int(c.metadata.get("votes", 1)) for c in clustered), default=1)
+    conf = min(best.confidence, 0.75)  # provisional confidence capped
     return FinalVerdict(
         lat=best.lat,
         lng=best.lng,
-        confidence=best.confidence,
+        confidence=conf,
         reasoning=f"Provisional {stage} verdict (weighted cluster lead).",
         winner_agent=best.agent,
         all_candidates=clustered,
@@ -233,21 +234,24 @@ def run_contest(
     try:
         if cfg.staged and cfg.staged_parallel:
             _log(f"[stage] parallel start t=0 agents={agents}")
-            if "vlm" in agents:
-                _collect("vlm")
-                pending = [a for a in agents if a != "vlm"]
-                v1 = _interim_verdict(region, [results["vlm"]], stage="p1_fast", agents_pending=pending)
-                if v1 and on_stage:
-                    on_stage("p1_fast", region, v1, [results["vlm"]])
-            if "streetview" in agents:
-                _collect("streetview")
-                got = [results[t] for t in ("vlm", "streetview") if t in results]
+            stage_num = 0
+            max_timeout = max(cfg.timeouts.for_token(a) for a in agents)
+            for fut in as_completed(futures, timeout=max_timeout):
+                token = futures[fut]
+                try:
+                    res = fut.result(timeout=0)
+                except Exception as exc:  # noqa: BLE001
+                    _log(f"[{token}] failed: {exc}")
+                    res = _empty_result(token, str(exc))
+                results[token] = res
+                _log(f"[{token}] done {res.runtime_s:.1f}s candidates={len(res.candidates)} error={res.error}")
+                stage_num += 1
                 pending = [a for a in agents if a not in results]
-                v2 = _interim_verdict(region, got, stage="p2_clip", agents_pending=pending)
-                if v2 and on_stage:
-                    on_stage("p2_clip", region, v2, got)
-            for token in agents:
-                _collect(token)
+                got = [results[t] for t in agents if t in results]
+                stage_label = f"p{stage_num}"
+                v = _interim_verdict(region, got, stage=stage_label, agents_pending=pending)
+                if v and on_stage:
+                    on_stage(stage_label, region, v, got)
         else:
             for token in agents:
                 _collect(token)
