@@ -9,10 +9,10 @@ import numpy as np
 import torch
 from PIL import Image
 
-# ViT-H-14 — best fine-grained discrimination. Needs GPU for 3000+ frames.
-# On CPU, reduce --sv-max-frames or set CLIP_MODEL_NAME=ViT-L-14.
-_DEFAULT_MODEL = os.getenv("CLIP_MODEL_NAME", "ViT-H-14")
-_DEFAULT_PRETRAINED = os.getenv("CLIP_PRETRAINED", "laion2b_s32b_b79k")
+# ViT-bigG-14 — largest CLIP model, 1280-dim, best visual discrimination.
+# Needs GPU. On CPU, set CLIP_MODEL_NAME=ViT-L-14.
+_DEFAULT_MODEL = os.getenv("CLIP_MODEL_NAME", "ViT-bigG-14")
+_DEFAULT_PRETRAINED = os.getenv("CLIP_PRETRAINED", "laion2b_s39b_b160k")
 
 
 @dataclass
