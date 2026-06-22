@@ -95,12 +95,46 @@ def vision_prompt(
     )
 
 
+def vision_prompt_multi(
+    prompt: str,
+    images: list[Path],
+    *,
+    task: VisionTask = VisionTask.JUDGE,
+    cwd: Path | None = None,
+) -> str:
+    """Send a prompt with multiple images attached (e.g. clue + Street View panels).
+
+    Falls back to single-image ``vision_prompt`` on the first image for providers
+    that do not implement a dedicated multi-image path.
+    """
+    paths = [p for p in images if p is not None]
+    if not paths:
+        raise ValueError("vision_prompt_multi requires at least one image")
+    provider = active_vision_provider()
+    if provider == "bedrock":
+        return _bedrock_vision_multi(prompt, paths, task=task)
+    if provider == "anthropic":
+        return _anthropic_vision_multi(prompt, paths, task=task)
+    if provider in ("openai", "azure_openai"):
+        return _openai_like_vision_multi(prompt, paths, task=task, azure=provider == "azure_openai")
+    if provider == "gemini":
+        return _gemini_vision_multi(prompt, paths)
+    # Cursor or unknown — degrade to single image.
+    return vision_prompt(prompt, paths[0], task=task, cwd=cwd)
+
+
 def _image_b64(path: Path) -> tuple[str, str]:
     data = path.read_bytes()
     mime = "image/jpeg"
     if path.suffix.lower() == ".png":
         mime = "image/png"
     return base64.b64encode(data).decode("ascii"), mime
+
+
+def _image_bytes(path: Path) -> tuple[bytes, str]:
+    data = path.read_bytes()
+    fmt = "png" if path.suffix.lower() == ".png" else "jpeg"
+    return data, fmt
 
 
 def _gemini_vision(prompt: str, image_path: Path) -> str:
@@ -297,30 +331,36 @@ def _anthropic_vision(prompt: str, image_path: Path, *, task: VisionTask) -> str
     return "".join(p.get("text", "") for p in parts if p.get("type") == "text")
 
 
-def _bedrock_vision(prompt: str, image_path: Path, *, task: VisionTask) -> str:
-    """Claude on Amazon Bedrock via Converse API (bearer token or IAM)."""
-    b64, mime = _image_b64(image_path)
-    img_format = "jpeg" if mime == "image/jpeg" else "png"
-    region = os.getenv("AWS_BEDROCK_REGION", os.getenv("AWS_REGION", "us-east-1"))
-    messages = [
-        {
-            "role": "user",
-            "content": [
-                {
-                    "image": {
-                        "format": img_format,
-                        "source": {"bytes": b64},
-                    }
-                },
-                {"text": prompt},
-            ],
-        }
-    ]
+def _bedrock_content_blocks(prompt: str, image_paths: list[Path], *, as_base64: bool) -> list[dict]:
+    """Build Converse content blocks: all images first, then the text prompt.
 
+    AWS Bedrock's REST Converse API carries blob fields as **base64 strings** in
+    JSON, whereas the boto3 client expects **raw bytes** and base64-encodes them
+    itself. ``as_base64`` selects the correct encoding for the transport.
+    """
+    blocks: list[dict] = []
+    for path in image_paths:
+        raw, fmt = _image_bytes(path)
+        payload = base64.b64encode(raw).decode("ascii") if as_base64 else raw
+        blocks.append({"image": {"format": fmt, "source": {"bytes": payload}}})
+    blocks.append({"text": prompt})
+    return blocks
+
+
+def _bedrock_vision(prompt: str, image_path: Path, *, task: VisionTask) -> str:
+    return _bedrock_vision_multi(prompt, [image_path], task=task)
+
+
+def _bedrock_vision_multi(prompt: str, image_paths: list[Path], *, task: VisionTask) -> str:
+    """Claude on Amazon Bedrock via Converse API (bearer token or IAM)."""
+    region = os.getenv("AWS_BEDROCK_REGION", os.getenv("AWS_REGION", "us-east-1"))
     token = _bedrock_token()
     last_error = ""
     for model_id in _bedrock_models_to_try(task):
         if token:
+            messages = [
+                {"role": "user", "content": _bedrock_content_blocks(prompt, image_paths, as_base64=True)}
+            ]
             url = f"https://bedrock-runtime.{region}.amazonaws.com/model/{model_id}/converse"
             resp = httpx.post(
                 url,
@@ -329,7 +369,7 @@ def _bedrock_vision(prompt: str, image_path: Path, *, task: VisionTask) -> str:
                     "Content-Type": "application/json",
                 },
                 json={"messages": messages},
-                timeout=180,
+                timeout=240,
             )
             if resp.status_code >= 400:
                 last_error = f"{model_id} ({resp.status_code}): {resp.text[:200]}"
@@ -340,6 +380,12 @@ def _bedrock_vision(prompt: str, image_path: Path, *, task: VisionTask) -> str:
 
         if _bedrock_iam_configured():
             try:
+                messages = [
+                    {
+                        "role": "user",
+                        "content": _bedrock_content_blocks(prompt, image_paths, as_base64=False),
+                    }
+                ]
                 return _bedrock_vision_boto3(messages, model_id, region)
             except Exception as exc:  # noqa: BLE001
                 last_error = f"{model_id}: {exc}"
@@ -357,6 +403,84 @@ def _bedrock_vision_boto3(messages: list, model_id: str, region: str) -> str:
     client = boto3.client("bedrock-runtime", region_name=region)
     response = client.converse(modelId=model_id, messages=messages)
     return _parse_bedrock_converse(response)
+
+
+def _anthropic_vision_multi(prompt: str, image_paths: list[Path], *, task: VisionTask) -> str:
+    content: list[dict] = []
+    for path in image_paths:
+        b64, mime = _image_b64(path)
+        media = "image/jpeg" if mime == "image/jpeg" else "image/png"
+        content.append(
+            {"type": "image", "source": {"type": "base64", "media_type": media, "data": b64}}
+        )
+    content.append({"type": "text", "text": prompt})
+    payload = {
+        "model": _anthropic_model_for_task(task),
+        "max_tokens": 2000,
+        "messages": [{"role": "user", "content": content}],
+    }
+    resp = httpx.post(
+        "https://api.anthropic.com/v1/messages",
+        headers={
+            "x-api-key": os.environ["ANTHROPIC_API_KEY"],
+            "anthropic-version": "2023-06-01",
+            "content-type": "application/json",
+        },
+        json=payload,
+        timeout=240,
+    )
+    resp.raise_for_status()
+    parts = resp.json().get("content", [])
+    return "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+
+
+def _openai_like_vision_multi(
+    prompt: str, image_paths: list[Path], *, task: VisionTask, azure: bool
+) -> str:
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for path in image_paths:
+        b64, _ = _image_b64(path)
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}})
+    messages = [{"role": "user", "content": content}]
+    if azure:
+        endpoint = os.environ["AZURE_OPENAI_ENDPOINT"].rstrip("/")
+        deployment = _azure_deployment_for_task(task)
+        url = f"{endpoint}/openai/deployments/{deployment}/chat/completions"
+        resp = httpx.post(
+            url,
+            params={"api-version": os.getenv("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")},
+            headers={"api-key": os.environ["AZURE_OPENAI_API_KEY"], "content-type": "application/json"},
+            json={"messages": messages, "max_tokens": 2000, "temperature": 0},
+            timeout=240,
+        )
+    else:
+        resp = httpx.post(
+            f"{os.getenv('OPENAI_BASE_URL', 'https://api.openai.com/v1').rstrip('/')}/chat/completions",
+            headers={"Authorization": f"Bearer {os.environ['OPENAI_API_KEY']}"},
+            json={"model": _openai_model_for_task(task), "messages": messages, "temperature": 0},
+            timeout=240,
+        )
+    resp.raise_for_status()
+    return resp.json()["choices"][0]["message"]["content"]
+
+
+def _gemini_vision_multi(prompt: str, image_paths: list[Path]) -> str:
+    key = os.environ["GEMINI_API_KEY"]
+    model = os.getenv("GEMINI_VISION_MODEL", "gemini-3.5-flash")
+    parts: list[dict] = [{"text": prompt}]
+    for path in image_paths:
+        b64, mime = _image_b64(path)
+        parts.append({"inline_data": {"mime_type": mime, "data": b64}})
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    resp = httpx.post(
+        url,
+        params={"key": key},
+        json={"contents": [{"parts": parts}], "generationConfig": {"temperature": 0.1}},
+        timeout=240,
+    )
+    resp.raise_for_status()
+    out = resp.json()["candidates"][0]["content"]["parts"]
+    return "".join(p.get("text", "") for p in out)
 
 
 def _parse_bedrock_converse(payload: dict) -> str:

@@ -24,6 +24,10 @@ dependencies = [
 
 [project.optional-dependencies]
 cursor = ["cursor-sdk>=0.1.0"]
+dev = ["pytest>=8.0"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [project.scripts]
 doordash-geo-hunt = "doordash_geo_hunt.cli:main"

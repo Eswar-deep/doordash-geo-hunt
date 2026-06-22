@@ -41,6 +41,53 @@ class ClipMatcher:
             feats = feats / feats.norm(dim=-1, keepdim=True)
             return feats.cpu().numpy()[0]
 
+    @torch.inference_mode()
+    def embed_batch(self, images: list[Image.Image], batch_size: int = 32) -> np.ndarray:
+        """Embed many images in GPU/CPU batches. Returns (N, D) L2-normalized array."""
+        if not images:
+            return np.empty((0, 512), dtype=np.float32)
+        vectors: list[np.ndarray] = []
+        for start in range(0, len(images), batch_size):
+            chunk = images[start : start + batch_size]
+            with self._infer_lock:
+                tensors = torch.stack([self.preprocess(img) for img in chunk]).to(self.device)
+                feats = self.model.encode_image(tensors)
+                feats = feats / feats.norm(dim=-1, keepdim=True)
+                vectors.append(feats.cpu().numpy())
+        return np.concatenate(vectors, axis=0)
+
+    def rank_batched(
+        self,
+        query_vec: np.ndarray,
+        candidates: list[dict],
+        top_k: int = 15,
+        batch_size: int = 32,
+    ) -> list[MatchScore]:
+        """Rank candidates against a precomputed query vector using batched embeds.
+
+        PIL images are released from each candidate dict after embedding to keep
+        memory bounded on large Street View sweeps.
+        """
+        if not candidates:
+            return []
+        images = [c["image"] for c in candidates]
+        mat = self.embed_batch(images, batch_size=batch_size)
+        sims = mat @ query_vec
+        scored: list[MatchScore] = []
+        for cand, score in zip(candidates, sims):
+            cand.pop("image", None)  # free PIL image
+            scored.append(
+                MatchScore(
+                    lat=cand["lat"],
+                    lng=cand["lng"],
+                    score=float(score),
+                    heading=cand.get("heading"),
+                    source_id=str(cand.get("pano_id") or cand.get("image_id") or ""),
+                )
+            )
+        scored.sort(key=lambda s: s.score, reverse=True)
+        return scored[:top_k]
+
     def rank(
         self,
         query: Image.Image,
@@ -50,22 +97,7 @@ class ClipMatcher:
         if not candidates:
             return []
         query_vec = self.embed(query)
-        scored: list[MatchScore] = []
-        for cand in candidates:
-            image = cand["image"]
-            vec = self.embed(image)
-            score = float(np.dot(query_vec, vec))
-            scored.append(
-                MatchScore(
-                    lat=cand["lat"],
-                    lng=cand["lng"],
-                    score=score,
-                    heading=cand.get("heading"),
-                    source_id=str(cand.get("pano_id") or cand.get("image_id") or ""),
-                )
-            )
-        scored.sort(key=lambda s: s.score, reverse=True)
-        return scored[:top_k]
+        return self.rank_batched(query_vec, candidates, top_k=top_k)
 
 
 _SHARED_LOCK = threading.Lock()
