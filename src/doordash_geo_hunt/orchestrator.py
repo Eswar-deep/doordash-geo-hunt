@@ -88,35 +88,29 @@ def _preflight(contest: ContestInput, agents: list[str]) -> None:
 
 def _build_query_image(contest: ContestInput) -> Image.Image:
     raw = load_rgb(contest.location_image)
-    masked = crop_location_background(raw)
-    enhanced = enhance_for_matching(masked)
-    # Keep image at 768px max — CLIP preprocess does its own final resize, but
-    # starting from a higher-res source preserves fine-grained textures
-    # (brick patterns, signage, window details) better than the old 512px cap.
+    cropped = crop_location_background(raw)
+    enhanced = enhance_for_matching(cropped)
     return Image.fromarray(resize_max_side(enhanced, max_side=768))
 
 
 def _build_query_crops(full_image: Image.Image) -> list[Image.Image]:
-    """Generate auxiliary crops for multi-crop CLIP embedding.
+    """Generate auxiliary crops from the already-clean background image.
 
-    Multiple overlapping crops capture different background regions that may
-    match different Street View headings. The final query vector averages all
-    crops, making it more robust than a single full-image embedding.
+    Since crop_location_background now returns ONLY pure background pixels
+    (no gray fills), these crops are all artifact-free sub-regions that
+    capture different architectural angles.
     """
     w, h = full_image.size
     crops: list[Image.Image] = []
 
-    # Top half — buildings/sky/upper architecture (most discriminative for geolocation)
-    crops.append(full_image.crop((0, 0, w, h // 2)))
+    # Top half — upper architecture, sky, rooflines
+    if h > 64:
+        crops.append(full_image.crop((0, 0, w, h // 2)))
 
-    # Left third and right third — capture side buildings/walls
-    third = w // 3
-    crops.append(full_image.crop((0, 0, third + third // 2, h)))
-    crops.append(full_image.crop((w - third - third // 2, 0, w, h)))
-
-    # Center strip (avoids masked bag region which is now neutral gray)
-    margin = w // 5
-    crops.append(full_image.crop((margin, 0, w - margin, int(h * 0.6))))
+    # Left half and right half — different sides of the street/alley
+    if w > 64:
+        crops.append(full_image.crop((0, 0, w // 2, h)))
+        crops.append(full_image.crop((w // 2, 0, w, h)))
 
     return crops
 

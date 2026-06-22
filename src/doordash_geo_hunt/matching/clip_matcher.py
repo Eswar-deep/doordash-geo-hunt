@@ -52,7 +52,7 @@ class ClipMatcher:
             return feats.cpu().numpy()[0]
 
     @torch.inference_mode()
-    def embed_multi_crop(self, primary: Image.Image, crops: list[Image.Image] | None, weight_primary: float = 0.5) -> np.ndarray:
+    def embed_multi_crop(self, primary: Image.Image, crops: list[Image.Image] | None, weight_primary: float = 0.65) -> np.ndarray:
         """Embed the primary image and auxiliary crops, return a weighted-average vector.
 
         The primary image gets `weight_primary` of the total weight; the remaining
