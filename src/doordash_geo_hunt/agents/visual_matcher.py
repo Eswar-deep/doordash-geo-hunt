@@ -46,31 +46,58 @@ def _build_tasks(
     pitch: float = 0.0,
     cap: int | None = None,
 ) -> list[dict]:
-    """Build fetch tasks ensuring every pano gets at least one heading before any gets a second.
+    """Build fetch tasks with maximum angular diversity per pano.
 
-    This guarantees spatially uniform coverage when the cap cuts off early,
-    rather than exhaustively covering one corner and ignoring the rest.
+    When cap < panos×headings, each pano gets a subset of headings that are
+    evenly spread across 360° (not clustered at the start of the list). This
+    ensures every pano covers all directions even under a tight frame budget.
     """
     if not panos or not headings:
         return []
     import random
     shuffled = list(panos)
     random.shuffle(shuffled)
-    tasks: list[dict] = []
-    for h_idx, h in enumerate(headings):
+
+    if cap is None or cap >= len(shuffled) * len(headings):
+        # No cap pressure — give every pano all headings.
+        tasks: list[dict] = []
         for pano in shuffled:
-            tasks.append(
-                {
-                    "lat": pano["lat"],
-                    "lng": pano["lng"],
-                    "heading": float(h),
-                    "pitch": float(pitch),
+            for h in headings:
+                tasks.append({
+                    "lat": pano["lat"], "lng": pano["lng"],
+                    "heading": float(h), "pitch": float(pitch),
                     "pano_id": pano.get("pano_id"),
-                }
-            )
-            if cap is not None and len(tasks) >= cap:
-                return tasks
-    return tasks
+                })
+        return tasks[:cap] if cap else tasks
+
+    # Cap is binding — distribute headings evenly per pano.
+    n_per_pano = max(1, cap // len(shuffled))
+    n_headings = len(headings)
+    tasks = []
+    for i, pano in enumerate(shuffled):
+        stride = max(1, n_headings // n_per_pano)
+        offset = i % stride
+        selected = headings[offset::stride][:n_per_pano]
+        for h in selected:
+            tasks.append({
+                "lat": pano["lat"], "lng": pano["lng"],
+                "heading": float(h), "pitch": float(pitch),
+                "pano_id": pano.get("pano_id"),
+            })
+    # Fill remaining budget with extra headings for the first panos.
+    if len(tasks) < cap:
+        used = {(t["pano_id"], t["heading"]) for t in tasks}
+        for pano in shuffled:
+            for h in headings:
+                if (pano.get("pano_id"), float(h)) not in used:
+                    tasks.append({
+                        "lat": pano["lat"], "lng": pano["lng"],
+                        "heading": float(h), "pitch": float(pitch),
+                        "pano_id": pano.get("pano_id"),
+                    })
+                    if len(tasks) >= cap:
+                        return tasks
+    return tasks[:cap]
 
 
 def run_streetview_matcher(
