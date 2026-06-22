@@ -9,11 +9,10 @@ import numpy as np
 import torch
 from PIL import Image
 
-# ViT-H-14 is the best practical CLIP model for fine-grained visual discrimination.
-# 1024-dim embeddings, much larger vision encoder than L-14 or B-32.
-# ~2.5GB weights, slower on CPU but far more accurate for distinguishing similar scenes.
-_DEFAULT_MODEL = os.getenv("CLIP_MODEL_NAME", "ViT-H-14")
-_DEFAULT_PRETRAINED = os.getenv("CLIP_PRETRAINED", "laion2b_s32b_b79k")
+# ViT-L-14 is the default — fast enough on CPU, much better than B-32.
+# For GPU instances, set CLIP_MODEL_NAME=ViT-H-14 for best discrimination.
+_DEFAULT_MODEL = os.getenv("CLIP_MODEL_NAME", "ViT-L-14")
+_DEFAULT_PRETRAINED = os.getenv("CLIP_PRETRAINED", "openai")
 
 
 @dataclass
