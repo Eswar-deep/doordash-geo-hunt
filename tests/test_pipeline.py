@@ -93,21 +93,20 @@ def test_crop_location_background_shapes():
     tiny = np.zeros((2, 2, 3), dtype=np.uint8)
     assert crop_location_background(tiny).shape[2] == 3
 
-    # Synthetic image with a red bag in center-bottom should produce a mask
+    # Synthetic image with a red bag in center-bottom → crop should exclude the bag
     img = np.full((200, 160, 3), 180, dtype=np.uint8)  # gray background
     img[120:190, 50:110] = [220, 30, 30]  # red bag region
     out = crop_location_background(img)
-    assert out.shape == img.shape
-    # The red region should now be filled with mean color, not red
-    center_pixel = out[155, 80]
-    assert center_pixel[0] < 200  # red channel suppressed
+    assert out.ndim == 3 and out.shape[2] == 3
+    # Output should be shorter than input (bag area cropped away)
+    assert out.shape[0] < img.shape[0]
 
     sample = Path("samples/miami-drop1/photo3.jpg")
     if sample.exists():
         arr = np.asarray(Image.open(sample).convert("RGB"))
         out = crop_location_background(arr)
         assert out.ndim == 3 and out.shape[2] == 3
-        assert out.shape == arr.shape  # full image preserved
+        assert out.shape[0] <= arr.shape[0]
 
 
 def test_ingest_classify(tmp_path):

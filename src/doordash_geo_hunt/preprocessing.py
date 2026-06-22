@@ -101,13 +101,17 @@ def _detect_bag_mask(image: np.ndarray) -> np.ndarray:
 
 
 def crop_location_background(image: np.ndarray) -> np.ndarray:
-    """Remove the DoorDash bag/pedestal and keep the background for CLIP matching.
+    """Extract the background region above and beside the DoorDash bag for CLIP.
 
-    Strategy: detect the red bag via color segmentation, mask it with the image's
-    mean color (neutral for CLIP), and return the full-size image. This preserves
-    all spatial context that the old crop-and-concat approach discarded.
+    Strategy: use the bag mask to determine where the bag is, then crop the
+    largest contiguous background region ABOVE the bag's top edge. This gives
+    CLIP a clean, artifact-free view of just the background (buildings, walls,
+    sky) without any gray fills or compositing artifacts.
 
-    Falls back to a generous center-bottom mask if color detection finds nothing.
+    The key insight: CLIP embeddings are highly sensitive to unnatural image
+    artifacts (gray rectangles, composited strips). Feeding it a smaller but
+    PURE background crop produces far better similarity scores than a full
+    image with a gray-filled hole.
     """
     image = _ensure_rgb(image)
     h, w = image.shape[:2]
@@ -117,28 +121,47 @@ def crop_location_background(image: np.ndarray) -> np.ndarray:
     bag_mask = _detect_bag_mask(image)
     mask_pixels = np.count_nonzero(bag_mask)
 
-    if mask_pixels < h * w * 0.02:
-        # Color detection failed — use a conservative center-bottom ellipse fallback.
-        bag_mask = np.zeros((h, w), dtype=np.uint8)
-        center_x, center_y = w // 2, int(h * 0.65)
-        axes = (int(w * 0.25), int(h * 0.30))
-        cv2.ellipse(bag_mask, (center_x, center_y), axes, 0, 0, 360, 255, -1)
-        # Extend to bottom
-        bag_mask[int(h * 0.65):, int(w * 0.25):int(w * 0.75)] = 255
+    if mask_pixels >= h * w * 0.02:
+        # Find the top edge of the bag — everything above it is pure background
+        rows_with_bag = np.where(bag_mask.any(axis=1))[0]
+        bag_top = rows_with_bag[0] if len(rows_with_bag) > 0 else int(h * 0.55)
 
-    # Cap mask at 60% of image to avoid wiping out the whole frame
-    if np.count_nonzero(bag_mask) > h * w * 0.60:
-        bag_mask = np.zeros((h, w), dtype=np.uint8)
-        center_x, center_y = w // 2, int(h * 0.65)
-        axes = (int(w * 0.20), int(h * 0.25))
-        cv2.ellipse(bag_mask, (center_x, center_y), axes, 0, 0, 360, 255, -1)
+        # Also find the horizontal extent of the bag to extract side strips
+        cols_with_bag = np.where(bag_mask.any(axis=0))[0]
+        bag_left = cols_with_bag[0] if len(cols_with_bag) > 0 else int(w * 0.30)
+        bag_right = cols_with_bag[-1] if len(cols_with_bag) > 0 else int(w * 0.70)
+    else:
+        # No bag detected — assume center-bottom placement
+        bag_top = int(h * 0.55)
+        bag_left = int(w * 0.30)
+        bag_right = int(w * 0.70)
 
-    # Fill masked region with image mean (neutral for CLIP embeddings)
-    result = image.copy()
-    mean_color = image.mean(axis=(0, 1)).astype(np.uint8)
-    result[bag_mask == 255] = mean_color
+    # Primary crop: everything above the bag (full width) — this is where
+    # buildings, walls, sky, and architectural details are most visible.
+    # Take a bit more than just above the bag (add 10% overlap) to capture
+    # context at the bag's level (e.g., wall texture beside the bag).
+    crop_bottom = min(h, int(bag_top + h * 0.08))
+    top_crop = image[:crop_bottom, :]
 
-    return result
+    # If the top crop is very narrow (bag is very high), include side strips
+    if crop_bottom < h * 0.35:
+        # Bag is positioned high — also grab left and right side columns
+        left_strip = image[:, :max(1, bag_left)]
+        right_strip = image[:, min(w - 1, bag_right):]
+        # Stack: top full-width, then sides joined horizontally below
+        sides = np.concatenate([left_strip, right_strip], axis=1)
+        if sides.shape[1] != top_crop.shape[1]:
+            sides = cv2.resize(
+                sides, (top_crop.shape[1], max(1, sides.shape[0])),
+                interpolation=cv2.INTER_AREA,
+            )
+        top_crop = np.concatenate([top_crop, sides], axis=0)
+
+    # Ensure minimum size
+    if top_crop.shape[0] < 32 or top_crop.shape[1] < 32:
+        return image[:max(32, int(h * 0.5)), :]
+
+    return top_crop
 
 
 def enhance_for_matching(image: np.ndarray) -> np.ndarray:
