@@ -115,7 +115,7 @@ def run_streetview_matcher(
             client = StreetViewClient(workers=cfg.workers)
             own_client = True
         matcher = ctx.clip_matcher or get_clip_matcher()
-        query_vec = matcher.embed(ctx.query_image)
+        query_vec = matcher.embed_multi_crop(ctx.query_image, ctx.query_crops)
         sv_cache = (cache_dir / "streetview") if (cache_dir and cfg.cache) else None
 
         all_scores: list = []
@@ -232,7 +232,7 @@ def _clip_region_matcher(
     """Shared CLIP ranking for optional Mapillary / KartaView agents."""
     started = time.time()
     matcher = ctx.clip_matcher or get_clip_matcher()
-    query_vec = matcher.embed(ctx.query_image)
+    query_vec = matcher.embed_multi_crop(ctx.query_image, ctx.query_crops)
     ranked = matcher.rank_batched(query_vec, samples, top_k=20)
     merged = cluster_candidates([(m.lat, m.lng, m.score) for m in ranked], merge_radius_m=30.0)
     sorted_scores = sorted(m.score for m in ranked)
