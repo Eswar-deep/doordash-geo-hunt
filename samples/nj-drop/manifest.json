@@ -5,15 +5,15 @@
   "city_hint": "New Jersey",
   "photo_classification": {
     "promo1": "samples\\nj-drop\\photo1.jpg",
-    "map": "samples\\nj-drop\\photo4.jpg",
-    "location": "samples\\nj-drop\\photo2.jpg",
+    "map": "samples\\nj-drop\\photo2.jpg",
+    "location": "samples\\nj-drop\\photo3.jpg",
     "promo2": "samples\\nj-drop\\photo4.jpg"
   },
-  "classification_confidence": 0.95,
+  "classification_confidence": 0.679,
   "files": {
     "promo1": "samples\\nj-drop\\photo1.jpg",
-    "map": "samples\\nj-drop\\photo4.jpg",
-    "location": "samples\\nj-drop\\photo2.jpg",
+    "map": "samples\\nj-drop\\photo2.jpg",
+    "location": "samples\\nj-drop\\photo3.jpg",
     "promo2": "samples\\nj-drop\\photo4.jpg"
   }
 }
