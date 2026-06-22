@@ -9,10 +9,10 @@ import numpy as np
 import torch
 from PIL import Image
 
-# ViT-L-14 is the default — fast enough on CPU, much better than B-32.
-# For GPU instances, set CLIP_MODEL_NAME=ViT-H-14 for best discrimination.
-_DEFAULT_MODEL = os.getenv("CLIP_MODEL_NAME", "ViT-L-14")
-_DEFAULT_PRETRAINED = os.getenv("CLIP_PRETRAINED", "openai")
+# ViT-H-14 — best fine-grained discrimination. Needs GPU for 3000+ frames.
+# On CPU, reduce --sv-max-frames or set CLIP_MODEL_NAME=ViT-L-14.
+_DEFAULT_MODEL = os.getenv("CLIP_MODEL_NAME", "ViT-H-14")
+_DEFAULT_PRETRAINED = os.getenv("CLIP_PRETRAINED", "laion2b_s32b_b79k")
 
 
 @dataclass
