@@ -66,7 +66,7 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sv-refine-span", type=int, default=30)
     parser.add_argument("--sv-refine-step", type=int, default=10)
     parser.add_argument("--sv-pitch-refine", default="0,-10")
-    parser.add_argument("--sv-max-frames", type=int, default=1000)
+    parser.add_argument("--sv-max-frames", type=int, default=3000)
     parser.add_argument("--sv-step-m", type=float, default=None)
     parser.add_argument("--sv-cache", action="store_true", default=False, help="Dev only: cache SV frames")
 

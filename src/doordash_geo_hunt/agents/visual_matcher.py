@@ -95,9 +95,9 @@ def run_streetview_matcher(
         frames_fetched = 0
 
         # ---- Exhaustive pass: ALL panos × N headings, parallel ----------------
-        step = cfg.step_m or max(40.0, region.radius_m / 15.0)
-        panos = client.list_panoramas(region, step_m=step, max_panos=600, workers=cfg.workers)
-        n_headings = _heading_count(cfg, default=cfg.headings_fine)
+        step = cfg.step_m or max(30.0, region.radius_m / 20.0)
+        panos = client.list_panoramas(region, step_m=step, max_panos=cfg.max_panos, workers=cfg.workers)
+        n_headings = _heading_count(cfg, default=cfg.headings)
         hdgs = headings_evenly(n_headings)
         tasks = _build_tasks(panos, hdgs, cap=cfg.max_frames)
         _log(f"[sv] exhaustive panos={len(panos)} headings={n_headings} frames={len(tasks)}")
