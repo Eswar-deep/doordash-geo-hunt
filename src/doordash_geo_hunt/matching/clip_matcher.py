@@ -1,11 +1,19 @@
 from __future__ import annotations
 
+import os
+import sys
 import threading
 from dataclasses import dataclass
 
 import numpy as np
 import torch
 from PIL import Image
+
+# ViT-H-14 is the best practical CLIP model for fine-grained visual discrimination.
+# 1024-dim embeddings, much larger vision encoder than L-14 or B-32.
+# ~2.5GB weights, slower on CPU but far more accurate for distinguishing similar scenes.
+_DEFAULT_MODEL = os.getenv("CLIP_MODEL_NAME", "ViT-H-14")
+_DEFAULT_PRETRAINED = os.getenv("CLIP_PRETRAINED", "laion2b_s32b_b79k")
 
 
 @dataclass
@@ -20,18 +28,21 @@ class MatchScore:
 class ClipMatcher:
     """Embedding-based visual similarity (works well for architecture / storefronts)."""
 
-    def __init__(self, model_name: str = "ViT-B-32", pretrained: str = "openai") -> None:
+    def __init__(self, model_name: str | None = None, pretrained: str | None = None) -> None:
         import open_clip
 
+        model_name = model_name or _DEFAULT_MODEL
+        pretrained = pretrained or _DEFAULT_PRETRAINED
+        print(f"[clip] Loading {model_name} ({pretrained})...", file=sys.stderr, flush=True)
         self.model, _, self.preprocess = open_clip.create_model_and_transforms(
             model_name, pretrained=pretrained
         )
         self.tokenizer = open_clip.get_tokenizer(model_name)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         self.model = self.model.to(self.device).eval()
-        # Model inference is serialized so a single shared instance can be used
-        # safely from the parallel agent threads.
         self._infer_lock = threading.Lock()
+        self._embed_dim = self.model.visual.output_dim
+        print(f"[clip] Ready: {model_name} dim={self._embed_dim} device={self.device}", file=sys.stderr, flush=True)
 
     @torch.inference_mode()
     def embed(self, image: Image.Image) -> np.ndarray:
@@ -45,7 +56,7 @@ class ClipMatcher:
     def embed_batch(self, images: list[Image.Image], batch_size: int = 32) -> np.ndarray:
         """Embed many images in GPU/CPU batches. Returns (N, D) L2-normalized array."""
         if not images:
-            return np.empty((0, 512), dtype=np.float32)
+            return np.empty((0, self._embed_dim), dtype=np.float32)
         vectors: list[np.ndarray] = []
         for start in range(0, len(images), batch_size):
             chunk = images[start : start + batch_size]
@@ -104,7 +115,7 @@ _SHARED_LOCK = threading.Lock()
 _SHARED_MATCHER: ClipMatcher | None = None
 
 
-def get_clip_matcher(model_name: str = "ViT-B-32", pretrained: str = "openai") -> ClipMatcher:
+def get_clip_matcher(model_name: str | None = None, pretrained: str | None = None) -> ClipMatcher:
     """Return a process-wide shared ``ClipMatcher``.
 
     The model (and the heavy ``torch`` / ``torchvision`` / ``open_clip`` imports
