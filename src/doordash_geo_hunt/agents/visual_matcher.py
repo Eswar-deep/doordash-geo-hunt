@@ -46,9 +46,19 @@ def _build_tasks(
     pitch: float = 0.0,
     cap: int | None = None,
 ) -> list[dict]:
+    """Build fetch tasks ensuring every pano gets at least one heading before any gets a second.
+
+    This guarantees spatially uniform coverage when the cap cuts off early,
+    rather than exhaustively covering one corner and ignoring the rest.
+    """
+    if not panos or not headings:
+        return []
+    import random
+    shuffled = list(panos)
+    random.shuffle(shuffled)
     tasks: list[dict] = []
-    for pano in panos:
-        for h in headings:
+    for h_idx, h in enumerate(headings):
+        for pano in shuffled:
             tasks.append(
                 {
                     "lat": pano["lat"],
