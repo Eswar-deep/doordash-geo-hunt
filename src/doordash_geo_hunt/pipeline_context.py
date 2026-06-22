@@ -43,5 +43,6 @@ class PipelineContext:
     contest: ContestInput
     region: SearchRegion
     query_image: Image.Image
+    query_crops: list | None = None  # list[Image.Image] auxiliary crops for multi-crop embedding
     clip_matcher: object | None = None  # ClipMatcher (avoid heavy import at module load)
     sv_client: object | None = None  # StreetViewClient | None

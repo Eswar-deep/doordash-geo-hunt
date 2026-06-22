@@ -52,6 +52,26 @@ class ClipMatcher:
             return feats.cpu().numpy()[0]
 
     @torch.inference_mode()
+    def embed_multi_crop(self, primary: Image.Image, crops: list[Image.Image] | None, weight_primary: float = 0.5) -> np.ndarray:
+        """Embed the primary image and auxiliary crops, return a weighted-average vector.
+
+        The primary image gets `weight_primary` of the total weight; the remaining
+        weight is split equally among the crops. This produces a query vector
+        that captures both the overall scene and localized architectural details.
+        """
+        primary_vec = self.embed(primary)
+        if not crops:
+            return primary_vec
+        crop_vecs = self.embed_batch(crops)
+        if crop_vecs.shape[0] == 0:
+            return primary_vec
+        avg_crop = crop_vecs.mean(axis=0)
+        avg_crop = avg_crop / (np.linalg.norm(avg_crop) + 1e-8)
+        combined = weight_primary * primary_vec + (1.0 - weight_primary) * avg_crop
+        combined = combined / (np.linalg.norm(combined) + 1e-8)
+        return combined.astype(np.float32)
+
+    @torch.inference_mode()
     def embed_batch(self, images: list[Image.Image], batch_size: int = 32) -> np.ndarray:
         """Embed many images in GPU/CPU batches. Returns (N, D) L2-normalized array."""
         if not images:

@@ -88,9 +88,37 @@ def _preflight(contest: ContestInput, agents: list[str]) -> None:
 
 def _build_query_image(contest: ContestInput) -> Image.Image:
     raw = load_rgb(contest.location_image)
-    cropped = crop_location_background(raw)
-    enhanced = enhance_for_matching(cropped)
-    return Image.fromarray(resize_max_side(enhanced))
+    masked = crop_location_background(raw)
+    enhanced = enhance_for_matching(masked)
+    # Keep image at 768px max — CLIP preprocess does its own final resize, but
+    # starting from a higher-res source preserves fine-grained textures
+    # (brick patterns, signage, window details) better than the old 512px cap.
+    return Image.fromarray(resize_max_side(enhanced, max_side=768))
+
+
+def _build_query_crops(full_image: Image.Image) -> list[Image.Image]:
+    """Generate auxiliary crops for multi-crop CLIP embedding.
+
+    Multiple overlapping crops capture different background regions that may
+    match different Street View headings. The final query vector averages all
+    crops, making it more robust than a single full-image embedding.
+    """
+    w, h = full_image.size
+    crops: list[Image.Image] = []
+
+    # Top half — buildings/sky/upper architecture (most discriminative for geolocation)
+    crops.append(full_image.crop((0, 0, w, h // 2)))
+
+    # Left third and right third — capture side buildings/walls
+    third = w // 3
+    crops.append(full_image.crop((0, 0, third + third // 2, h)))
+    crops.append(full_image.crop((w - third - third // 2, 0, w, h)))
+
+    # Center strip (avoids masked bag region which is now neutral gray)
+    margin = w // 5
+    crops.append(full_image.crop((margin, 0, w - margin, int(h * 0.6))))
+
+    return crops
 
 
 def build_context(
@@ -98,6 +126,7 @@ def build_context(
 ) -> PipelineContext:
     """Preprocess once and warm heavy singletons on the main thread."""
     query_image = _build_query_image(contest)
+    query_crops = _build_query_crops(query_image)
 
     matcher = None
     try:
@@ -135,6 +164,7 @@ def build_context(
         contest=contest,
         region=region,
         query_image=query_image,
+        query_crops=query_crops,
         clip_matcher=matcher,
         sv_client=sv_client,
     )
