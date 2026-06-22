@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from dataclasses import dataclass
 
 EARTH_RADIUS_M = 6_371_000.0
 
@@ -69,3 +70,64 @@ def cluster_candidates(
         score = max(s for _, _, s in cluster)
         merged.append((lat, lng, score))
     return sorted(merged, key=lambda x: x[2], reverse=True)
+
+
+@dataclass
+class ScoredPoint:
+    """A clustered match that keeps the heading of its best-scoring member."""
+
+    lat: float
+    lng: float
+    score: float
+    heading: float | None = None
+    pitch: float | None = None
+    members: int = 1
+
+
+def cluster_scored_points(
+    points: list[tuple[float, float, float, float | None]],
+    merge_radius_m: float = 25.0,
+) -> list[ScoredPoint]:
+    """Cluster (lat, lng, score, heading) points.
+
+    Unlike :func:`cluster_candidates`, the merged location keeps the **heading of
+    the single highest-scoring member** instead of losing it to float averaging,
+    so downstream Street View verification can re-aim the camera correctly.
+    """
+    if not points:
+        return []
+
+    # Highest score first so cluster[0] is always the representative member.
+    ordered = sorted(points, key=lambda p: p[2], reverse=True)
+    clusters: list[list[tuple[float, float, float, float | None]]] = []
+    for pt in ordered:
+        lat, lng, _score, _heading = pt
+        placed = False
+        for cluster in clusters:
+            clat, clng = cluster[0][0], cluster[0][1]
+            if haversine_m(lat, lng, clat, clng) <= merge_radius_m:
+                cluster.append(pt)
+                placed = True
+                break
+        if not placed:
+            clusters.append([pt])
+
+    result: list[ScoredPoint] = []
+    for cluster in clusters:
+        total = sum(max(p[2], 0.0) for p in cluster)
+        best = cluster[0]  # highest score (ordered desc)
+        if total > 0:
+            lat = sum(p[0] * max(p[2], 0.0) for p in cluster) / total
+            lng = sum(p[1] * max(p[2], 0.0) for p in cluster) / total
+        else:
+            lat, lng = best[0], best[1]
+        result.append(
+            ScoredPoint(
+                lat=lat,
+                lng=lng,
+                score=best[2],
+                heading=best[3],
+                members=len(cluster),
+            )
+        )
+    return sorted(result, key=lambda p: p.score, reverse=True)

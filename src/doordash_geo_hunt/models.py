@@ -92,3 +92,13 @@ class FinalVerdict:
     winner_agent: AgentName | None
     all_candidates: list[LocationCandidate]
     street_view_url: str | None = None
+    low_confidence: bool = False
+    human_review: bool = False
+    agreement_votes: int = 1
+    alternatives: list[LocationCandidate] = field(default_factory=list)
+    stage: str = "final"
+    provisional: bool = False
+    agents_pending: list[str] = field(default_factory=list)
+
+    def maps_url(self) -> str:
+        return f"https://www.google.com/maps?q={self.lat},{self.lng}"
