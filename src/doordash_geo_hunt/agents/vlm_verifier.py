@@ -32,22 +32,25 @@ def _strip_code_fences(text: str) -> str:
 
 _VERIFY_PROMPT = """You are comparing Street View images against a clue photo to find the exact location match.
 
-Image 1 is the CLUE photo (a DoorDash bag on a pedestal — focus only on the BACKGROUND: walls, buildings, ground, pipes, fixtures, architectural details).
+Image 1 is the CLUE photo. It shows a DoorDash bag sitting on a short reflective pedestal/stand (IGNORE the bag and pedestal entirely — they are NOT part of the location). Focus ONLY on the BACKGROUND visible behind and around the bag: walls, buildings, ground surface, pipes, fixtures, architectural details.
 
-Images 2 through {n} are Street View captures from different nearby locations and angles.
+IMPORTANT: The shiny/reflective surface you may see is the pedestal the bag sits on, NOT water or a pool. Do not interpret any reflections as water features.
 
-For each Street View image (2-{n}), rate how well its background matches the clue on a scale of 0-100:
-- 90-100: Near-perfect match (same wall, same pipe, same ground texture, clearly the spot)
-- 70-89: Strong match (same building/wall type, similar features, likely the same location)
-- 40-69: Partial match (similar architecture but different specific location)
+Images 2 through {n} are Street View captures from different nearby locations and viewing angles.
+
+For each Street View image (2-{n}), rate how well its background matches the clue's background on a scale of 0-100:
+- 90-100: Near-perfect match (same wall texture, same pipe placement, same ground, clearly the exact spot)
+- 70-89: Strong match (same building/wall type, very similar features, likely the same location)
+- 40-69: Partial match (similar architecture style but not the same specific spot)
 - 0-39: Poor match (different building/scene entirely)
 
-Pay attention to:
-- Brick color, pattern, and weathering
-- Drain pipes, gutters, fixtures on walls
-- Ground surface (cobblestone, pavers, asphalt)
-- Window/door styles and positions
-- Wall-mounted lights or signs
+Match these specific features visible in the clue background:
+- Brick/wall color, pattern, mortar style, and weathering
+- Drain pipes, downspouts, gutters, and their exact placement
+- Ground surface (cobblestone, brick pavers, concrete, asphalt)
+- Window/door styles, positions, and frames
+- Wall-mounted fixtures (lights, cameras, signs, brackets)
+- Overall alley/passage width and proportions
 
 Respond ONLY with this JSON (no other text):
 {{

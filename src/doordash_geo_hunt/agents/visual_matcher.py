@@ -365,10 +365,10 @@ def run_vlm_guided_densification(
             )
 
         # Exhaustive heading × pitch coverage per pano.
-        # With 800 panos this would be 800×24×6=115K, so we cap intelligently:
-        # each pano gets 12 headings × 4 pitches = 48 frames (covering all angles)
+        # 24 headings (every 15°) × 4 pitches = 96 frames/pano.
+        # With 800 panos = 76,800 total; cap at 38,400 (subsample panos if needed).
         from ..streetview import headings_evenly
-        hdgs = headings_evenly(12)  # Every 30° — coarser but covers all directions
+        hdgs = headings_evenly(24)  # Every 15° — must cover angles like 135°, 150°
         pitches_local = [0.0, 15.0, 30.0, 45.0]  # 4 pitch levels
 
         all_tasks: list[dict] = []
@@ -381,11 +381,11 @@ def run_vlm_guided_densification(
                         "pano_id": pano.get("pano_id"),
                     })
 
-        # Cap total frames — with 800 panos × 48 = 38400, cap at 25000
-        if len(all_tasks) > 25000:
+        # Cap total frames — with 800 panos × 96 = 76800, cap at 38400
+        if len(all_tasks) > 38400:
             import random
             random.shuffle(all_tasks)
-            all_tasks = all_tasks[:25000]
+            all_tasks = all_tasks[:38400]
 
         _log(f"[densify] fetching {len(all_tasks)} frames ({len(panos)} panos × {len(hdgs)} headings × {len(pitches_local)} pitches)")
         frames = client.fetch_frames(

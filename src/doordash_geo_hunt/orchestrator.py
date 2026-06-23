@@ -364,16 +364,23 @@ def run_contest(
             _log(f"[vlm-verify] failed: {exc}")
 
     # ---- Final verdict: densify-first strategy ---------------------------------
-    # When densification succeeds, it is far more accurate than the broad sweep
-    # (focused 150m radius vs 700m). Use densify as the primary answer; only fall
-    # back to the general judge if densification failed.
     if densify_result and densify_result.candidates:
-        # Use VLM-verified candidates if available, else raw densify
-        final_cands = (
-            verify_result.candidates
-            if verify_result and verify_result.candidates
-            else densify_result.candidates
-        )
+        # Use VLM-verified candidates only if VLM is confident (>30%).
+        # Otherwise the VLM is confused (e.g. misreading the image) and CLIP
+        # ranking is more reliable than random VLM guesses.
+        vlm_confident = False
+        if verify_result and verify_result.candidates:
+            top_vlm_cand = verify_result.candidates[0]
+            vlm_score = (top_vlm_cand.metadata or {}).get("vlm_verify_score", 0)
+            vlm_confident = vlm_score >= 50  # VLM must give ≥50/100 to override CLIP
+
+        if vlm_confident:
+            final_cands = verify_result.candidates
+            _log(f"[stage] VLM confident (score={vlm_score}), using VLM-verified ranking")
+        else:
+            final_cands = densify_result.candidates
+            _log(f"[stage] VLM uncertain, using raw CLIP densify ranking")
+
         best = final_cands[0]
         _log(f"[stage] using densify result: ({best.lat:.6f}, {best.lng:.6f}) conf={best.confidence}")
 
