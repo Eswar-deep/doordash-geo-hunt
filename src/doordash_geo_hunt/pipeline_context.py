@@ -20,7 +20,7 @@ class StreetViewConfig:
     refine_span: int = 30
     refine_step: int = 10
     pitch_refine: tuple[float, ...] = (0.0, 15.0, 30.0, -10.0)
-    max_frames: int = 4000
+    max_frames: int = 6000
     step_m: float | None = None
     workers: int = 32
     clip_batch_size: int = 32
