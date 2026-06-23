@@ -158,16 +158,13 @@ class StreetViewClient:
         import random
         import time as _t
         params = {
+            "location": f"{lat},{lng}",
             "heading": heading,
             "pitch": pitch,
             "fov": fov,
             "size": f"{width}x{height}",
             "key": self.api_key,
         }
-        if pano_id:
-            params["pano"] = pano_id
-        else:
-            params["location"] = f"{lat},{lng}"
         for attempt in range(_retries):
             try:
                 resp = self._client.get(self.STATIC_URL, params=params)
@@ -179,7 +176,7 @@ class StreetViewClient:
             if resp.status_code == 200:
                 return Image.open(BytesIO(resp.content)).convert("RGB")
             if resp.status_code in (429, 503) and attempt < _retries - 1:
-                _t.sleep(2 + random.random() * 3)  # 2-5s with jitter
+                _t.sleep(2 + random.random() * 3)
                 continue
             return None
         return None
@@ -217,7 +214,6 @@ class StreetViewClient:
                 heading=task.get("heading", 0.0),
                 pitch=task.get("pitch", 0.0),
                 fov=fov,
-                pano_id=task.get("pano_id"),
             )
             if img is None:
                 return None
