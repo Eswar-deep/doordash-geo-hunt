@@ -56,6 +56,7 @@ class PipelineConfig:
     judge_workers: int = 4
     cache_dir: Path | None = None
     run_judge: bool = True
+    densify: bool = False  # Off by default — opt in with --densify (uses 25K+ extra requests)
 
 
 def _log(msg: str) -> None:
@@ -392,7 +393,9 @@ def run_contest(
     densify_centers = vlm_cands + broad_clip_cands
 
     densify_result = None
-    if densify_centers and ctx.sv_client is not None:
+    if not cfg.densify:
+        _log("[stage] densify disabled (use --densify to enable, costs 25K+ extra requests)")
+    elif densify_centers and ctx.sv_client is not None:
         try:
             from .agents.visual_matcher import run_vlm_guided_densification
             densify_result = run_vlm_guided_densification(ctx, densify_centers, cfg.sv, radius_m=ctx.region.radius_m)

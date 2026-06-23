@@ -53,6 +53,7 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--clip-batch-size", type=int, default=256)
     parser.add_argument("--ingest-workers", type=int, default=4)
     parser.add_argument("--judge-workers", type=int, default=4)
+    parser.add_argument("--densify", action="store_true", default=False, help="Enable VLM-guided densification (uses 25K+ extra API requests)")
 
     # Street View coarse-to-fine
     parser.add_argument("--sv-coarse-fine", dest="sv_coarse_fine", action="store_true", default=True)
@@ -124,6 +125,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
         judge_workers=args.judge_workers,
         cache_dir=args.cache_dir,
         run_judge=run_judge,
+        densify=getattr(args, 'densify', False),
     )
 
 
