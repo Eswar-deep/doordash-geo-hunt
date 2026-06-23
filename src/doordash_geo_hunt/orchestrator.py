@@ -36,7 +36,7 @@ TOKEN_TO_AGENT: dict[str, AgentName] = {
 
 @dataclass
 class AgentTimeouts:
-    streetview: float = 900.0
+    streetview: float = 1800.0
     vlm: float = 90.0
     landmark: float = 120.0
     mapillary: float = 300.0
