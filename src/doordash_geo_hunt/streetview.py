@@ -29,15 +29,28 @@ class StreetViewClient:
     STATIC_URL = "https://maps.googleapis.com/maps/api/streetview"
 
     def __init__(self, api_key: str | None = None, workers: int = 32) -> None:
-        self.api_key = api_key or os.getenv("GOOGLE_MAPS_API_KEY")
-        if not self.api_key:
+        raw_keys = api_key or os.getenv("GOOGLE_MAPS_API_KEY") or ""
+        self._keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
+        if not self._keys:
             raise RuntimeError("GOOGLE_MAPS_API_KEY is required for Street View agent.")
+        self.api_key = self._keys[0]  # primary key for metadata
+        self._key_idx = 0
+        self._key_lock = threading.Lock()
         self.workers = max(1, int(workers))
         limits = httpx.Limits(
             max_connections=self.workers,
             max_keepalive_connections=self.workers,
         )
         self._client = httpx.Client(limits=limits, timeout=60, follow_redirects=True)
+        if len(self._keys) > 1:
+            _log(f"[sv] {len(self._keys)} API keys loaded (rotating, {25000 * len(self._keys)}k unsigned quota)")
+
+    def _next_key(self) -> str:
+        """Round-robin key selection for parallel requests."""
+        with self._key_lock:
+            key = self._keys[self._key_idx % len(self._keys)]
+            self._key_idx += 1
+            return key
 
     def close(self) -> None:
         try:
@@ -163,7 +176,7 @@ class StreetViewClient:
             "pitch": pitch,
             "fov": fov,
             "size": f"{width}x{height}",
-            "key": self.api_key,
+            "key": self._next_key(),
         }
         for attempt in range(_retries):
             try:
