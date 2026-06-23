@@ -364,17 +364,21 @@ def run_contest(
             _log(f"[vlm-verify] failed: {exc}")
 
     # ---- Final verdict: LoFTR-first strategy ------------------------------------
-    # LoFTR inlier count is definitive: 30+ inliers means physically the same spot.
-    # If LoFTR found a strong match, trust it absolutely. Otherwise fall back to
-    # VLM verify (if strong) or raw densify ranking.
+    # LoFTR inlier count is definitive ONLY when there's a clear winner:
+    # - 50+ inliers AND at least 2x the runner-up's count
+    # If all candidates have similar inlier counts (e.g. 23 vs 22 vs 22), it's
+    # noise from repetitive textures, not a real match.
     if densify_result and densify_result.candidates:
         best = densify_result.candidates[0]
         best_inliers = (best.metadata or {}).get("loftr_inliers", 0)
+        second_inliers = (densify_result.candidates[1].metadata or {}).get("loftr_inliers", 0) if len(densify_result.candidates) > 1 else 0
 
-        if best_inliers >= 20:
-            # LoFTR definitive match — use directly
+        # Definitive = strong absolute count AND clear separation from runner-up
+        loftr_definitive = best_inliers >= 50 and best_inliers >= second_inliers * 2
+
+        if loftr_definitive:
             final_cands = densify_result.candidates
-            _log(f"[stage] LoFTR DEFINITIVE match: {best_inliers} inliers at ({best.lat:.6f}, {best.lng:.6f})")
+            _log(f"[stage] LoFTR DEFINITIVE match: {best_inliers} inliers (2nd={second_inliers}) at ({best.lat:.6f}, {best.lng:.6f})")
         elif verify_result and verify_result.candidates:
             top_vlm_cand = verify_result.candidates[0]
             vlm_score = (top_vlm_cand.metadata or {}).get("vlm_verify_score", 0)
@@ -383,10 +387,10 @@ def run_contest(
                 _log(f"[stage] VLM strong match (score={vlm_score}/100)")
             else:
                 final_cands = densify_result.candidates
-                _log(f"[stage] LoFTR weak ({best_inliers} inliers), VLM weak ({vlm_score}/100), using LoFTR ranking")
+                _log(f"[stage] LoFTR inconclusive ({best_inliers} vs {second_inliers}), VLM weak ({vlm_score}/100), using LoFTR ranking")
         else:
             final_cands = densify_result.candidates
-            _log(f"[stage] using LoFTR ranking ({best_inliers} inliers)")
+            _log(f"[stage] using LoFTR ranking ({best_inliers} inliers, 2nd={second_inliers})")
 
         best = final_cands[0]
         _log(f"[stage] final pick: ({best.lat:.6f}, {best.lng:.6f}) conf={best.confidence}")

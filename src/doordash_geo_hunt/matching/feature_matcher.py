@@ -54,8 +54,11 @@ def _get_matcher():
         return _MATCHER
 
 
-def _pil_to_tensor(img: Image.Image, max_side: int = 480) -> torch.Tensor:
-    """Convert PIL image to grayscale tensor for LoFTR, resized to fit max_side."""
+def _pil_to_tensor(img: Image.Image, max_side: int = 640) -> torch.Tensor:
+    """Convert PIL image to grayscale tensor for LoFTR, resized to fit max_side.
+    
+    LoFTR outdoor model works best at 640+ resolution for architectural details.
+    """
     img_rgb = img.convert("RGB")
     w, h = img_rgb.size
     scale = min(max_side / max(w, h), 1.0)
@@ -79,8 +82,13 @@ def match_pair(query: Image.Image, candidate: Image.Image) -> FeatureMatchResult
     matcher = _get_matcher()
     device = next(matcher.parameters()).device
 
-    img0 = _pil_to_tensor(query, max_side=480).to(device)
-    img1 = _pil_to_tensor(candidate, max_side=480).to(device)
+    # Crop bottom 30% of query to remove reflective pedestal/stand artifacts
+    # that generate false matches against every candidate equally
+    w, h = query.size
+    query_cropped = query.crop((0, 0, w, int(h * 0.7)))
+
+    img0 = _pil_to_tensor(query_cropped, max_side=640).to(device)
+    img1 = _pil_to_tensor(candidate, max_side=640).to(device)
 
     with torch.inference_mode():
         correspondences = matcher({"image0": img0, "image1": img1})
@@ -108,15 +116,15 @@ def rerank_candidates(
     candidates: list[dict],
     top_k: int = 10,
 ) -> list[tuple[int, FeatureMatchResult]]:
-    """Re-rank candidate frames by LoFTR inlier count.
+    """Re-rank candidate frames by LoFTR inlier count + CLIP hybrid score.
 
     Args:
         query: The clue/query image (background-cropped).
-        candidates: List of dicts with at minimum an "image" key (PIL Image).
+        candidates: List of dicts with "image" (PIL Image) and "score" (CLIP score).
         top_k: Return top-K results.
 
     Returns:
-        List of (original_index, FeatureMatchResult) sorted by inlier count descending.
+        List of (original_index, FeatureMatchResult) sorted by hybrid score descending.
     """
     results: list[tuple[int, FeatureMatchResult]] = []
 
@@ -132,11 +140,24 @@ def rerank_candidates(
         if (i + 1) % 20 == 0:
             _log(f"[loftr] {i + 1}/{len(candidates)} scored, best so far: {max(r.num_inliers for _, r in results)} inliers")
 
-    results.sort(key=lambda x: x[1].num_inliers, reverse=True)
+    # Hybrid ranking: LoFTR inliers (primary) + CLIP score (tiebreaker)
+    # Normalize inliers to [0,1] range for combination
+    max_inliers = max((r.num_inliers for _, r in results), default=1) or 1
+    
+    def hybrid_score(idx_result: tuple[int, FeatureMatchResult]) -> float:
+        idx, res = idx_result
+        clip_score = candidates[idx].get("score", 0.0) if idx < len(candidates) else 0.0
+        inlier_norm = res.num_inliers / max_inliers
+        # 70% LoFTR weight + 30% CLIP weight when LoFTR has signal
+        # If all inlier counts are similar (low variance), CLIP dominates
+        return inlier_norm * 0.7 + clip_score * 0.3
+
+    results.sort(key=hybrid_score, reverse=True)
 
     if results:
+        top_idx, top_res = results[0]
         _log(
-            f"[loftr] done: top={results[0][1].num_inliers} inliers, "
+            f"[loftr] done: top={top_res.num_inliers} inliers (clip={candidates[top_idx].get('score', 0):.4f}), "
             f"2nd={results[1][1].num_inliers if len(results) > 1 else 0}, "
             f"3rd={results[2][1].num_inliers if len(results) > 2 else 0}"
         )
