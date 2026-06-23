@@ -417,67 +417,126 @@ def run_vlm_guided_densification(
         _log(f"[densify] CLIP top-200 done, top={clip_top_score:.4f}. Starting LoFTR re-rank...")
 
         # LoFTR re-ranking: count geometrically verified keypoint matches
-        # This is what makes the difference — same physical location = 50+ inliers,
-        # different location with similar vibes = 0-5 inliers.
         from ..matching.feature_matcher import rerank_candidates
         loftr_candidates = [
             {"image": m.image, "lat": m.lat, "lng": m.lng, "heading": m.heading, "score": m.score}
             for m in scored if m.image is not None
         ]
 
-        loftr_results = rerank_candidates(ctx.query_image, loftr_candidates, top_k=10)
+        # Only run LoFTR if we have enough candidates with images
+        loftr_discriminative = False
+        best_inliers = 0
+        if len(loftr_candidates) >= 10:
+            loftr_results = rerank_candidates(ctx.query_image, loftr_candidates, top_k=10)
+            if loftr_results:
+                inlier_counts = [r.num_inliers for _, r in loftr_results[:10]]
+                best_inliers = max(inlier_counts)
+                worst_top10 = min(inlier_counts)
+                # LoFTR is discriminative only if the top has significantly more inliers
+                # than the others. If all are within 5 of each other, it's just noise.
+                loftr_discriminative = (best_inliers - worst_top10) >= 10
+                _log(
+                    f"[loftr] spread: best={best_inliers} worst_top10={worst_top10} "
+                    f"gap={best_inliers - worst_top10} discriminative={loftr_discriminative}"
+                )
+        else:
+            _log(f"[loftr] only {len(loftr_candidates)} candidates with images, skipping LoFTR")
+            loftr_results = []
 
-        # Build final candidates from LoFTR ranking
+        # Build retained images lookup from CLIP top results
         retained_images: dict[tuple[float, float], "Image.Image"] = {}
-        for orig_idx, result in loftr_results:
-            cand = loftr_candidates[orig_idx]
-            if cand.get("image") is not None:
-                retained_images[(round(cand["lat"], 6), round(cand["lng"], 6))] = cand["image"]
 
-        # Free remaining images
-        for m in scored:
-            m.image = None
-        for c in loftr_candidates:
-            if (round(c["lat"], 6), round(c["lng"], 6)) not in retained_images:
+        if loftr_discriminative and loftr_results:
+            # LoFTR found a clear winner — use LoFTR ranking
+            _log(f"[densify] LoFTR discriminative! Using LoFTR ranking.")
+            for orig_idx, result in loftr_results[:10]:
+                cand = loftr_candidates[orig_idx]
+                if cand.get("image") is not None:
+                    retained_images[(round(cand["lat"], 6), round(cand["lng"], 6))] = cand["image"]
+
+            # Free remaining
+            for m in scored:
+                m.image = None
+            for c in loftr_candidates:
+                if (round(c["lat"], 6), round(c["lng"], 6)) not in retained_images:
+                    c.pop("image", None)
+
+            candidates = []
+            for orig_idx, result in loftr_results[:8]:
+                cand = loftr_candidates[orig_idx]
+                conf = min(result.num_inliers / 50.0, 0.99) if result.num_inliers > 0 else 0.1
+                key = (round(cand["lat"], 6), round(cand["lng"], 6))
+                img = retained_images.get(key)
+                candidates.append(
+                    LocationCandidate(
+                        lat=cand["lat"],
+                        lng=cand["lng"],
+                        confidence=round(conf, 4),
+                        agent=AgentName.STREETVIEW_MATCHER,
+                        heading=cand["heading"],
+                        evidence=(
+                            f"LoFTR inliers={result.num_inliers} tentative={result.num_tentative} "
+                            f"CLIP={cand['score']:.4f}"
+                        ),
+                        metadata={
+                            "loftr_inliers": result.num_inliers,
+                            "loftr_tentative": result.num_tentative,
+                            "clip_score": round(cand["score"], 4),
+                            "densified": True,
+                            "_sv_image": img,
+                        },
+                    )
+                )
+        else:
+            # LoFTR inconclusive — fall back to pure CLIP ranking (proven 95-137m)
+            _log(f"[densify] LoFTR inconclusive (all ~{best_inliers} inliers), using CLIP ranking")
+            for m in scored[:10]:
+                if m.image is not None:
+                    retained_images[(round(m.lat, 6), round(m.lng, 6))] = m.image
+
+            # Free remaining
+            for m in scored[10:]:
+                m.image = None
+            for c in loftr_candidates:
                 c.pop("image", None)
 
-        best_inliers = loftr_results[0][1].num_inliers if loftr_results else 0
-        candidates = []
-        for orig_idx, result in loftr_results[:8]:
-            cand = loftr_candidates[orig_idx]
-            conf = min(result.num_inliers / 50.0, 0.99) if result.num_inliers > 0 else 0.1
-            key = (round(cand["lat"], 6), round(cand["lng"], 6))
-            img = retained_images.get(key)
-            candidates.append(
-                LocationCandidate(
-                    lat=cand["lat"],
-                    lng=cand["lng"],
-                    confidence=round(conf, 4),
-                    agent=AgentName.STREETVIEW_MATCHER,
-                    heading=cand["heading"],
-                    evidence=(
-                        f"LoFTR inliers={result.num_inliers} tentative={result.num_tentative} "
-                        f"CLIP={cand['score']:.4f}"
-                    ),
-                    metadata={
-                        "loftr_inliers": result.num_inliers,
-                        "loftr_tentative": result.num_tentative,
-                        "clip_score": round(cand["score"], 4),
-                        "densified": True,
-                        "_sv_image": img,
-                    },
-                )
+            from ..geo import cluster_scored_points
+            clustered = cluster_scored_points(
+                [(m.lat, m.lng, m.score, m.heading) for m in scored], merge_radius_m=25.0
             )
+            sorted_scores = sorted(m.score for m in scored)
 
+            candidates = []
+            for pt in clustered[:8]:
+                conf = percentile_confidence(pt.score, sorted_scores)
+                key = (round(pt.lat, 6), round(pt.lng, 6))
+                img = retained_images.get(key)
+                candidates.append(
+                    LocationCandidate(
+                        lat=pt.lat,
+                        lng=pt.lng,
+                        confidence=conf,
+                        agent=AgentName.STREETVIEW_MATCHER,
+                        heading=pt.heading,
+                        evidence=f"CLIP densify={pt.score:.4f} conf={conf:.2f}",
+                        metadata={
+                            "clip_score": round(pt.score, 4),
+                            "densified": True,
+                            "_sv_image": img,
+                        },
+                    )
+                )
+
+        method = "LoFTR" if loftr_discriminative else "CLIP"
         _log(
             f"[densify] done {_time.time() - started:.1f}s "
-            f"best_inliers={best_inliers} clip_top={clip_top_score:.4f} candidates={len(candidates)}"
+            f"method={method} best_inliers={best_inliers} clip_top={clip_top_score:.4f} candidates={len(candidates)}"
         )
         return AgentResult(
             agent=AgentName.STREETVIEW_MATCHER,
             candidates=candidates,
             notes=(
-                f"VLM-guided densification + LoFTR: {len(panos)} panos, {len(all_tasks)} frames, "
+                f"Densification ({method}): {len(panos)} panos, {len(all_tasks)} frames, "
                 f"best_inliers={best_inliers}, clip_top={clip_top_score:.4f}"
             ),
             runtime_s=_time.time() - started,
