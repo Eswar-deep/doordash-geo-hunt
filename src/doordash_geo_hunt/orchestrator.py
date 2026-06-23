@@ -299,6 +299,75 @@ def run_contest(
 
     _log(f"[stage] agents complete in {time.time() - start:.1f}s; densifying around VLM estimate")
 
+    # ---- Zoom + Template matching (runs FIRST — only 50 API calls) ----------------
+    # Re-fetch the broad sweep's top CLIP candidates at FOV=30 (3x zoom) and run
+    # multi-patch template matching. If this finds a clear winner, we skip the
+    # expensive 38K-frame densification entirely.
+    zoom_template_result = None
+    broad_sv_result = None
+    for r in agent_results:
+        if r.agent == AgentName.STREETVIEW_MATCHER and r.candidates:
+            broad_sv_result = r
+            break
+
+    if broad_sv_result and broad_sv_result.candidates and ctx.sv_client is not None:
+        try:
+            from .matching.template_matcher import rerank_by_template
+            # Take top-8 broad sweep candidates for zoom (they have lat/lng/heading)
+            top_cands = broad_sv_result.candidates[:8]
+            zoom_tasks = [
+                {"lat": c.lat, "lng": c.lng, "heading": c.heading or 0.0, "pitch": 0.0}
+                for c in top_cands
+            ]
+            _log(f"[zoom] Fetching {len(zoom_tasks)} candidates at FOV=30 (3x zoom)...")
+            zoomed_frames = ctx.sv_client.fetch_frames(zoom_tasks, fov=30, workers=cfg.sv.workers, label="zoom")
+
+            if zoomed_frames:
+                zoom_dicts = [
+                    {"image": f.get("image"), "lat": f["lat"], "lng": f["lng"],
+                     "heading": f.get("heading", 0)}
+                    for f in zoomed_frames if f.get("image") is not None
+                ]
+                if zoom_dicts:
+                    _log(f"[zoom] Got {len(zoom_dicts)} zoomed frames. Running template match...")
+                    template_results = rerank_by_template(ctx.query_image, zoom_dicts, top_k=8)
+
+                    if template_results:
+                        best_matched = template_results[0][1].num_matched
+                        second_matched = template_results[1][1].num_matched if len(template_results) > 1 else 0
+                        template_discriminative = best_matched >= 4 and (best_matched - second_matched) >= 2
+                        _log(f"[template] top={best_matched}/8, 2nd={second_matched}, discriminative={template_discriminative}")
+
+                        if template_discriminative:
+                            from .models import LocationCandidate
+                            _log(f"[zoom] Template matched {best_matched}/8 patches — using as final answer")
+                            zoom_cands = []
+                            for orig_idx, result in template_results[:8]:
+                                cand = zoom_dicts[orig_idx]
+                                conf = min(result.match_ratio + 0.3, 0.99)
+                                zoom_cands.append(
+                                    LocationCandidate(
+                                        lat=cand["lat"], lng=cand["lng"],
+                                        confidence=round(conf, 4),
+                                        agent=AgentName.STREETVIEW_MATCHER,
+                                        heading=cand.get("heading"),
+                                        evidence=f"Template {result.num_matched}/{result.num_patches} patches",
+                                        metadata={"template_matched": result.num_matched, "densified": True},
+                                    )
+                                )
+                            from .models import AgentResult as AR
+                            zoom_template_result = AR(
+                                agent=AgentName.STREETVIEW_MATCHER,
+                                candidates=zoom_cands,
+                                notes=f"Zoom+template: {best_matched}/8 patches matched",
+                                runtime_s=0.0,
+                            )
+                            agent_results.append(zoom_template_result)
+            else:
+                _log("[zoom] No zoomed frames returned")
+        except Exception as exc:  # noqa: BLE001
+            _log(f"[zoom] failed: {exc}")
+
     # ---- VLM-guided densification + VLM verification ---------------------------
     # Combine VLM's candidates AND the broad sweep's best CLIP candidates as
     # density centers. VLM alone can be 300m+ off; the broad sweep saw the correct
