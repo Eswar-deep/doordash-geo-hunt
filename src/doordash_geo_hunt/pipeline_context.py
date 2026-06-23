@@ -19,17 +19,19 @@ class StreetViewConfig:
     refine_headings: bool = True
     refine_span: int = 30
     refine_step: int = 10
-    pitch_refine: tuple[float, ...] = (0.0, -10.0)
-    max_frames: int = 3000
+    pitch_refine: tuple[float, ...] = (0.0, 15.0, 30.0, -10.0)
+    max_frames: int = 4000
     step_m: float | None = None
     workers: int = 32
     clip_batch_size: int = 32
     cache: bool = False
     fov_coarse: int = 120
     fov_fine: int = 90
-    refine_max_frames: int = 50
+    refine_max_frames: int = 80
     max_panos: int = 800
     headings: int = 16
+    # Pitch values for the exhaustive pass (DoorDash photos often look UP at walls)
+    pitch_sweep: tuple[float, ...] = (0.0, 25.0)
 
 
 @dataclass

@@ -121,17 +121,24 @@ def run_streetview_matcher(
         all_scores: list = []
         frames_fetched = 0
 
-        # ---- Exhaustive pass: ALL panos × N headings, parallel ----------------
+        # ---- Exhaustive pass: ALL panos × N headings × pitches, parallel ---------
         step = cfg.step_m or max(30.0, region.radius_m / 20.0)
         panos = client.list_panoramas(region, step_m=step, max_panos=cfg.max_panos, workers=cfg.workers)
         n_headings = _heading_count(cfg, default=cfg.headings)
         hdgs = headings_evenly(n_headings)
-        tasks = _build_tasks(panos, hdgs, cap=cfg.max_frames)
-        _log(f"[sv] exhaustive panos={len(panos)} headings={n_headings} frames={len(tasks)}")
+
+        pitches = getattr(cfg, 'pitch_sweep', (0.0,))
+        frames_per_pitch = cfg.max_frames // len(pitches)
+        all_tasks: list[dict] = []
+        for pitch in pitches:
+            tasks_p = _build_tasks(panos, hdgs, pitch=pitch, cap=frames_per_pitch)
+            all_tasks.extend(tasks_p)
+
+        _log(f"[sv] exhaustive panos={len(panos)} headings={n_headings} pitches={list(pitches)} frames={len(all_tasks)}")
         frames = client.fetch_frames(
-            tasks, fov=cfg.fov_fine, workers=cfg.workers, cache_dir=sv_cache, label="sv"
+            all_tasks, fov=cfg.fov_fine, workers=cfg.workers, cache_dir=sv_cache, label="sv"
         )
-        frames_fetched += len(tasks)
+        frames_fetched += len(all_tasks)
         all_scores = list(matcher.rank_batched(
             query_vec, frames, top_k=80, batch_size=cfg.clip_batch_size
         ))
