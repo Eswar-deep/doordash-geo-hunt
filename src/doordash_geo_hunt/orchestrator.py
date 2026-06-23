@@ -311,7 +311,7 @@ def run_contest(
     if vlm_cands and ctx.sv_client is not None:
         try:
             from .agents.visual_matcher import run_vlm_guided_densification
-            densify_result = run_vlm_guided_densification(ctx, vlm_cands, cfg.sv, radius_m=150.0)
+            densify_result = run_vlm_guided_densification(ctx, vlm_cands, cfg.sv, radius_m=300.0)
             _log(
                 f"[densify] complete: {len(densify_result.candidates)} candidates "
                 f"in {densify_result.runtime_s:.1f}s"
@@ -346,7 +346,7 @@ def run_contest(
     if verify_cands and ctx.sv_client is not None:
         try:
             from .agents.vlm_verifier import verify_candidates_with_vlm
-            verify_result = verify_candidates_with_vlm(ctx, verify_cands, cfg.sv, max_verify=5)
+            verify_result = verify_candidates_with_vlm(ctx, verify_cands, cfg.sv, max_verify=8)
             _log(f"[vlm-verify] complete: {verify_result.notes}")
             if verify_result.candidates:
                 agent_results.append(verify_result)

@@ -333,8 +333,8 @@ def run_vlm_guided_densification(
         matcher = ctx.clip_matcher or get_clip_matcher()
         query_vec = matcher.embed_multi_crop(ctx.query_image, ctx.query_crops)
 
-        # Take top-3 VLM candidates as density centers
-        centers = [(c.lat, c.lng) for c in vlm_candidates[:3]]
+        # Take top-5 VLM candidates as density centers (more centers = better coverage)
+        centers = [(c.lat, c.lng) for c in vlm_candidates[:5]]
         _log(f"[densify] centers={len(centers)} radius={radius_m}m")
 
         # Find ALL panos within radius of VLM's guesses
@@ -342,8 +342,8 @@ def run_vlm_guided_densification(
             centers,
             region=ctx.region,
             radius_m=radius_m,
-            step_m=15.0,  # Very fine grid — every 15m
-            max_panos=500,
+            step_m=20.0,  # 20m grid for 300m radius
+            max_panos=800,
             workers=cfg.workers,
         )
         _log(f"[densify] found {len(panos)} panos near VLM estimate")
@@ -356,10 +356,12 @@ def run_vlm_guided_densification(
                 runtime_s=_time.time() - started,
             )
 
-        # ALL headings × ALL pitches for each pano — exhaustive local coverage
+        # Exhaustive heading × pitch coverage per pano.
+        # With 800 panos this would be 800×24×6=115K, so we cap intelligently:
+        # each pano gets 12 headings × 4 pitches = 48 frames (covering all angles)
         from ..streetview import headings_evenly
-        hdgs = headings_evenly(24)  # Every 15°
-        pitches_local = [0.0, 10.0, 20.0, 30.0, 40.0, -10.0]
+        hdgs = headings_evenly(12)  # Every 30° — coarser but covers all directions
+        pitches_local = [0.0, 15.0, 30.0, 45.0]  # 4 pitch levels
 
         all_tasks: list[dict] = []
         for pano in panos:
@@ -371,11 +373,11 @@ def run_vlm_guided_densification(
                         "pano_id": pano.get("pano_id"),
                     })
 
-        # Cap at 15000 frames if we have too many panos (shouldn't happen with 500 max)
-        if len(all_tasks) > 15000:
+        # Cap total frames — with 800 panos × 48 = 38400, cap at 25000
+        if len(all_tasks) > 25000:
             import random
             random.shuffle(all_tasks)
-            all_tasks = all_tasks[:15000]
+            all_tasks = all_tasks[:25000]
 
         _log(f"[densify] fetching {len(all_tasks)} frames ({len(panos)} panos × 24 headings × 6 pitches)")
         frames = client.fetch_frames(
@@ -390,9 +392,10 @@ def run_vlm_guided_densification(
                 runtime_s=_time.time() - started,
             )
 
-        # CLIP rank — get top 20 for later VLM verification
+        # CLIP rank — get top 50 for VLM verification to pick from
+        # (CLIP can't distinguish similar brick walls, so cast a wide net)
         scored = list(matcher.rank_batched(
-            query_vec, frames, top_k=20, batch_size=cfg.clip_batch_size
+            query_vec, frames, top_k=50, batch_size=cfg.clip_batch_size
         ))
 
         if not scored:
