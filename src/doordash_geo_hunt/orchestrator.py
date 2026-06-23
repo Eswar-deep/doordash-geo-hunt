@@ -300,18 +300,28 @@ def run_contest(
     _log(f"[stage] agents complete in {time.time() - start:.1f}s; densifying around VLM estimate")
 
     # ---- VLM-guided densification + VLM verification ---------------------------
-    # Use VLM's candidates (much more accurate than CLIP for location) as density centers.
-    # Then CLIP finds the exact frame, and VLM verifies visually.
+    # Combine VLM's candidates AND the broad sweep's best CLIP candidates as
+    # density centers. VLM alone can be 300m+ off; the broad sweep saw the correct
+    # pano but couldn't distinguish it — together they cover both failure modes.
     vlm_cands = []
     for r in agent_results:
         if r.agent in (AgentName.VLM_GEOGUESSER, AgentName.LANDMARK_OCR):
             vlm_cands.extend(r.candidates)
 
+    # Also pull top broad-sweep CLIP candidates as additional centers
+    broad_clip_cands = []
+    for r in agent_results:
+        if r.agent == AgentName.STREETVIEW_MATCHER and r.candidates:
+            broad_clip_cands.extend(r.candidates[:5])
+
+    # Merge: VLM candidates first (likely closer), then broad CLIP top-5
+    densify_centers = vlm_cands + broad_clip_cands
+
     densify_result = None
-    if vlm_cands and ctx.sv_client is not None:
+    if densify_centers and ctx.sv_client is not None:
         try:
             from .agents.visual_matcher import run_vlm_guided_densification
-            densify_result = run_vlm_guided_densification(ctx, vlm_cands, cfg.sv, radius_m=300.0)
+            densify_result = run_vlm_guided_densification(ctx, densify_centers, cfg.sv, radius_m=300.0)
             _log(
                 f"[densify] complete: {len(densify_result.candidates)} candidates "
                 f"in {densify_result.runtime_s:.1f}s"
@@ -373,7 +383,7 @@ def run_contest(
             confidence=best.confidence,
             reasoning=(
                 f"VLM-guided densification ({densify_result.notes}). "
-                f"Densified within 150m of VLM estimate, exhaustive heading/pitch coverage. "
+                f"Densified within 300m of VLM+CLIP estimates, exhaustive heading/pitch coverage. "
                 f"{best.evidence}"
             ),
             winner_agent=AgentName.STREETVIEW_MATCHER,

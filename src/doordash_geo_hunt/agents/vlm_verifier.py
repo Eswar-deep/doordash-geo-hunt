@@ -62,12 +62,13 @@ def verify_candidates_with_vlm(
     ctx: PipelineContext,
     candidates: list[LocationCandidate],
     cfg: StreetViewConfig | None = None,
-    max_verify: int = 5,
+    max_verify: int = 8,
 ) -> AgentResult:
-    """Fetch SV frames for top candidates and ask VLM which best matches the clue.
+    """Compare top candidates against clue photo using VLM visual reasoning.
 
-    Returns an AgentResult with the VLM-verified candidates re-ranked by
-    the VLM's visual match score.
+    Uses retained images from densification (stored in candidate metadata) to
+    avoid refetching from the Street View API (which rate-limits after heavy use).
+    Falls back to fetching only if no retained images are available.
     """
     started = time.time()
     cfg = cfg or StreetViewConfig()
@@ -80,144 +81,150 @@ def verify_candidates_with_vlm(
             runtime_s=time.time() - started,
         )
 
-    # Take top-N candidates for verification
     to_verify = candidates[:max_verify]
     _log(f"[vlm-verify] verifying {len(to_verify)} candidates against clue photo")
 
-    own_client = False
-    client = ctx.sv_client
-    try:
-        # Use a FRESH client to avoid rate-limit state from prior heavy downloads
-        from ..streetview import StreetViewClient
-        client = StreetViewClient(workers=4)
-        own_client = True
+    tmp_dir = Path(tempfile.mkdtemp(prefix="vlm_verify_"))
 
-        # Fetch one SV frame per candidate at the candidate's heading + pitch
-        sv_images: list[tuple[Path, LocationCandidate]] = []
-        tmp_dir = Path(tempfile.mkdtemp(prefix="vlm_verify_"))
+    # Use retained images from densify (no network needed)
+    sv_images: list[tuple[Path, LocationCandidate]] = []
+    need_fetch: list[tuple[int, LocationCandidate]] = []
 
-        for i, cand in enumerate(to_verify):
-            heading = cand.heading if cand.heading is not None else 0.0
-            pitch = float(cand.metadata.get("pitch", 25.0)) if cand.metadata else 25.0
+    for i, cand in enumerate(to_verify):
+        img = None
+        if cand.metadata and "_sv_image" in cand.metadata:
+            img = cand.metadata.pop("_sv_image")
 
-            # Try multiple pitch values — the clue often looks up at walls
-            img = None
-            for try_pitch in [pitch, 25.0, 0.0, 30.0]:
-                img = client.fetch_image(
-                    cand.lat, cand.lng,
-                    heading=heading,
-                    pitch=try_pitch,
-                    fov=90,
-                    width=640,
-                    height=640,
-                )
-                if img is not None:
-                    break
-                time.sleep(0.5)  # Brief pause between retries
-
-            if img is None:
-                _log(f"[vlm-verify] failed to fetch SV for candidate {i} at ({cand.lat:.6f}, {cand.lng:.6f})")
-                continue
-
+        if img is not None:
             path = tmp_dir / f"sv_candidate_{i}.jpg"
             img.save(path, quality=90)
             sv_images.append((path, cand))
+        else:
+            need_fetch.append((i, cand))
 
-        if not sv_images:
-            _log("[vlm-verify] no SV images fetched successfully")
-            return AgentResult(
-                agent=AgentName.STREETVIEW_MATCHER,
-                candidates=candidates,
-                notes="VLM verify: no SV images fetched.",
-                runtime_s=time.time() - started,
-            )
+    # Fall back to fetching for candidates without retained images
+    if need_fetch:
+        _log(f"[vlm-verify] {len(need_fetch)} candidates need SV fetch (no retained image)")
+        try:
+            from ..streetview import StreetViewClient
+            client = StreetViewClient(workers=4)
+            time.sleep(5)  # Cooldown after heavy prior downloads
 
-        # Save clue photo as temp file
-        clue_path = tmp_dir / "clue.jpg"
-        ctx.query_image.save(clue_path, quality=95)
+            for idx, cand in need_fetch:
+                heading = cand.heading if cand.heading is not None else 0.0
+                pitch = float(cand.metadata.get("pitch", 25.0)) if cand.metadata else 25.0
 
-        # Build image list: [clue, sv1, sv2, ...]
-        image_paths = [clue_path] + [p for p, _ in sv_images]
-        n_images = len(image_paths)
+                img = None
+                for try_pitch in [pitch, 25.0, 0.0, 30.0]:
+                    img = client.fetch_image(
+                        cand.lat, cand.lng,
+                        heading=heading,
+                        pitch=try_pitch,
+                        fov=90,
+                        width=640,
+                        height=640,
+                    )
+                    if img is not None:
+                        break
+                    time.sleep(1.0)
 
-        # Call VLM with multi-image prompt
+                if img is not None:
+                    path = tmp_dir / f"sv_candidate_{idx}.jpg"
+                    img.save(path, quality=90)
+                    sv_images.append((path, cand))
+                else:
+                    _log(f"[vlm-verify] failed to fetch SV for candidate {idx} at ({cand.lat:.6f}, {cand.lng:.6f})")
+
+            client.close()
+        except Exception as e:
+            _log(f"[vlm-verify] fetch fallback error: {e}")
+
+    if not sv_images:
+        _log("[vlm-verify] no SV images available for verification")
+        return AgentResult(
+            agent=AgentName.STREETVIEW_MATCHER,
+            candidates=candidates,
+            notes="VLM verify: no SV images available.",
+            runtime_s=time.time() - started,
+        )
+
+    # Save clue photo as temp file
+    clue_path = tmp_dir / "clue.jpg"
+    ctx.query_image.save(clue_path, quality=95)
+
+    # Build image list: [clue, sv1, sv2, ...]
+    image_paths = [clue_path] + [p for p, _ in sv_images]
+    n_images = len(image_paths)
+
+    # Call VLM with multi-image prompt
+    try:
         from ..llm_vision import vision_prompt_multi, VisionTask
         prompt = _VERIFY_PROMPT.format(n=n_images)
         _log(f"[vlm-verify] sending {n_images} images to VLM ({len(sv_images)} candidates)")
         response = vision_prompt_multi(prompt, image_paths, task=VisionTask.JUDGE)
         _log(f"[vlm-verify] VLM response: {response[:200]}")
-
-        # Parse VLM response
-        try:
-            parsed = json.loads(_strip_code_fences(response))
-            scores = parsed.get("scores", [])
-            best_idx = parsed.get("best_index", 0)
-            vlm_confidence = parsed.get("confidence", 50)
-            reasoning = parsed.get("reasoning", "")
-        except (json.JSONDecodeError, KeyError) as e:
-            _log(f"[vlm-verify] parse error: {e}, response: {response[:300]}")
-            return AgentResult(
-                agent=AgentName.STREETVIEW_MATCHER,
-                candidates=candidates,
-                notes=f"VLM verify parse failed: {e}",
-                runtime_s=time.time() - started,
-            )
-
-        # Re-rank candidates by VLM score
-        verified_candidates: list[LocationCandidate] = []
-        for i, (score_val, (_, cand)) in enumerate(zip(scores, sv_images)):
-            vlm_score = float(score_val) / 100.0
-            # Blend CLIP confidence with VLM score (VLM-dominant)
-            blended_conf = round(0.3 * cand.confidence + 0.7 * vlm_score, 4)
-            verified_candidates.append(
-                LocationCandidate(
-                    lat=cand.lat,
-                    lng=cand.lng,
-                    confidence=blended_conf,
-                    agent=AgentName.STREETVIEW_MATCHER,
-                    heading=cand.heading,
-                    evidence=f"VLM-verified: score={score_val}/100 blended={blended_conf:.2f} | {cand.evidence}",
-                    metadata={
-                        **(cand.metadata or {}),
-                        "vlm_verify_score": score_val,
-                        "vlm_verified": True,
-                    },
-                )
-            )
-
-        # Sort by blended confidence (VLM-weighted)
-        verified_candidates.sort(key=lambda c: c.confidence, reverse=True)
-
-        _log(
-            f"[vlm-verify] done {time.time() - started:.1f}s "
-            f"best_idx={best_idx} vlm_conf={vlm_confidence} "
-            f"top_score={scores[best_idx] if scores else 'N/A'}/100 "
-            f"reasoning: {reasoning}"
-        )
-
-        return AgentResult(
-            agent=AgentName.STREETVIEW_MATCHER,
-            candidates=verified_candidates,
-            notes=(
-                f"VLM-verified {len(sv_images)} candidates. "
-                f"Best: idx={best_idx} score={scores[best_idx] if scores else 'N/A'}/100 "
-                f"conf={vlm_confidence}%. {reasoning}"
-            ),
-            runtime_s=time.time() - started,
-        )
-
-    except Exception as exc:  # noqa: BLE001
-        _log(f"[vlm-verify] error: {exc}")
+    except Exception as e:
+        _log(f"[vlm-verify] VLM call failed: {e}")
         return AgentResult(
             agent=AgentName.STREETVIEW_MATCHER,
             candidates=candidates,
-            notes=f"VLM verify failed: {exc}",
-            error=str(exc),
+            notes=f"VLM verify call failed: {e}",
             runtime_s=time.time() - started,
         )
-    finally:
-        if own_client and client is not None:
-            try:
-                client.close()
-            except Exception:  # noqa: BLE001
-                pass
+
+    # Parse VLM response
+    try:
+        parsed = json.loads(_strip_code_fences(response))
+        scores = parsed.get("scores", [])
+        best_idx = parsed.get("best_index", 0)
+        vlm_confidence = parsed.get("confidence", 50)
+        reasoning = parsed.get("reasoning", "")
+    except (json.JSONDecodeError, KeyError) as e:
+        _log(f"[vlm-verify] parse error: {e}, response: {response[:300]}")
+        return AgentResult(
+            agent=AgentName.STREETVIEW_MATCHER,
+            candidates=candidates,
+            notes=f"VLM verify parse failed: {e}",
+            runtime_s=time.time() - started,
+        )
+
+    # Re-rank candidates by VLM score
+    verified_candidates: list[LocationCandidate] = []
+    for i, (score_val, (_, cand)) in enumerate(zip(scores, sv_images)):
+        vlm_score = float(score_val) / 100.0
+        blended_conf = round(0.3 * cand.confidence + 0.7 * vlm_score, 4)
+        verified_candidates.append(
+            LocationCandidate(
+                lat=cand.lat,
+                lng=cand.lng,
+                confidence=blended_conf,
+                agent=AgentName.STREETVIEW_MATCHER,
+                heading=cand.heading,
+                evidence=f"VLM-verified: score={score_val}/100 blended={blended_conf:.2f} | {cand.evidence}",
+                metadata={
+                    **(cand.metadata or {}),
+                    "vlm_verify_score": score_val,
+                    "vlm_verified": True,
+                },
+            )
+        )
+
+    verified_candidates.sort(key=lambda c: c.confidence, reverse=True)
+
+    _log(
+        f"[vlm-verify] done {time.time() - started:.1f}s "
+        f"best_idx={best_idx} vlm_conf={vlm_confidence} "
+        f"top_score={scores[best_idx] if scores else 'N/A'}/100 "
+        f"reasoning: {reasoning}"
+    )
+
+    return AgentResult(
+        agent=AgentName.STREETVIEW_MATCHER,
+        candidates=verified_candidates,
+        notes=(
+            f"VLM-verified {len(sv_images)} candidates. "
+            f"Best: idx={best_idx} score={scores[best_idx] if scores else 'N/A'}/100 "
+            f"conf={vlm_confidence}%. {reasoning}"
+        ),
+        runtime_s=time.time() - started,
+    )

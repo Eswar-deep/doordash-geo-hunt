@@ -42,6 +42,7 @@ class LocationCandidate:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        meta = {k: v for k, v in (self.metadata or {}).items() if not k.startswith("_")}
         return {
             "lat": self.lat,
             "lng": self.lng,
@@ -50,7 +51,7 @@ class LocationCandidate:
             "heading": self.heading,
             "pitch": self.pitch,
             "evidence": self.evidence,
-            "metadata": self.metadata,
+            "metadata": meta or None,
         }
 
 

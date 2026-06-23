@@ -333,8 +333,16 @@ def run_vlm_guided_densification(
         matcher = ctx.clip_matcher or get_clip_matcher()
         query_vec = matcher.embed_multi_crop(ctx.query_image, ctx.query_crops)
 
-        # Take top-5 VLM candidates as density centers (more centers = better coverage)
-        centers = [(c.lat, c.lng) for c in vlm_candidates[:5]]
+        # Use up to 10 density centers (VLM + broad CLIP combined), deduplicated
+        seen: set[tuple[float, float]] = set()
+        centers: list[tuple[float, float]] = []
+        for c in vlm_candidates:
+            key = (round(c.lat, 4), round(c.lng, 4))
+            if key not in seen:
+                seen.add(key)
+                centers.append((c.lat, c.lng))
+            if len(centers) >= 10:
+                break
         _log(f"[densify] centers={len(centers)} radius={radius_m}m")
 
         # Find ALL panos within radius of VLM's guesses
@@ -379,7 +387,7 @@ def run_vlm_guided_densification(
             random.shuffle(all_tasks)
             all_tasks = all_tasks[:25000]
 
-        _log(f"[densify] fetching {len(all_tasks)} frames ({len(panos)} panos × 24 headings × 6 pitches)")
+        _log(f"[densify] fetching {len(all_tasks)} frames ({len(panos)} panos × {len(hdgs)} headings × {len(pitches_local)} pitches)")
         frames = client.fetch_frames(
             all_tasks, fov=90, workers=cfg.workers, label="densify"
         )
@@ -392,10 +400,9 @@ def run_vlm_guided_densification(
                 runtime_s=_time.time() - started,
             )
 
-        # CLIP rank — get top 50 for VLM verification to pick from
-        # (CLIP can't distinguish similar brick walls, so cast a wide net)
+        # CLIP rank — get top 50, keep images for top 10 (for VLM verification without refetch)
         scored = list(matcher.rank_batched(
-            query_vec, frames, top_k=50, batch_size=cfg.clip_batch_size
+            query_vec, frames, top_k=50, batch_size=cfg.clip_batch_size, keep_images=10
         ))
 
         if not scored:
@@ -413,9 +420,18 @@ def run_vlm_guided_densification(
         sorted_scores = sorted(m.score for m in scored)
         top_score = clustered[0].score
 
+        # Build a lookup of retained images by (lat, lng, heading)
+        retained_images: dict[tuple[float, float], "Image.Image"] = {}
+        for m in scored:
+            if m.image is not None:
+                retained_images[(round(m.lat, 6), round(m.lng, 6))] = m.image
+                m.image = None  # transfer ownership
+
         candidates = []
         for pt in clustered[:8]:
             conf = percentile_confidence(pt.score, sorted_scores)
+            key = (round(pt.lat, 6), round(pt.lng, 6))
+            img = retained_images.get(key)
             candidates.append(
                 LocationCandidate(
                     lat=pt.lat,
@@ -424,7 +440,11 @@ def run_vlm_guided_densification(
                     agent=AgentName.STREETVIEW_MATCHER,
                     heading=pt.heading,
                     evidence=f"VLM-guided densify CLIP={pt.score:.4f} conf={conf:.2f}",
-                    metadata={"clip_score": round(pt.score, 4), "densified": True},
+                    metadata={
+                        "clip_score": round(pt.score, 4),
+                        "densified": True,
+                        "_sv_image": img,  # retained image for VLM verify
+                    },
                 )
             )
 

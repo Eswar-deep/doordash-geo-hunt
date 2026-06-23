@@ -22,6 +22,7 @@ class MatchScore:
     score: float
     heading: float | None = None
     source_id: str | None = None
+    image: "Image.Image | None" = None  # retained for VLM verification
 
 
 class ClipMatcher:
@@ -92,11 +93,15 @@ class ClipMatcher:
         candidates: list[dict],
         top_k: int = 15,
         batch_size: int = 32,
+        keep_images: int = 0,
     ) -> list[MatchScore]:
         """Rank candidates against a precomputed query vector using batched embeds.
 
         PIL images are released from each candidate dict after embedding to keep
         memory bounded on large Street View sweeps.
+
+        If keep_images > 0, the top-N MatchScore results will have their PIL
+        image retained in the .image attribute for downstream VLM verification.
         """
         if not candidates:
             return []
@@ -105,7 +110,6 @@ class ClipMatcher:
         sims = mat @ query_vec
         scored: list[MatchScore] = []
         for cand, score in zip(candidates, sims):
-            cand.pop("image", None)  # free PIL image
             scored.append(
                 MatchScore(
                     lat=cand["lat"],
@@ -113,9 +117,18 @@ class ClipMatcher:
                     score=float(score),
                     heading=cand.get("heading"),
                     source_id=str(cand.get("pano_id") or cand.get("image_id") or ""),
+                    image=cand.get("image"),
                 )
             )
         scored.sort(key=lambda s: s.score, reverse=True)
+
+        # Keep images only for top-N, free the rest
+        for i, s in enumerate(scored):
+            if i >= keep_images:
+                s.image = None
+        # Free images from original candidate dicts
+        for cand in candidates:
+            cand.pop("image", None)
         return scored[:top_k]
 
     def rank(
