@@ -152,7 +152,9 @@ class StreetViewClient:
         fov: int = 90,
         width: int = 640,
         height: int = 640,
+        _retries: int = 3,
     ) -> Image.Image | None:
+        import time as _t
         params = {
             "location": f"{lat},{lng}",
             "heading": heading,
@@ -161,10 +163,23 @@ class StreetViewClient:
             "size": f"{width}x{height}",
             "key": self.api_key,
         }
-        resp = self._client.get(self.STATIC_URL, params=params)
-        if resp.status_code != 200:
+        for attempt in range(_retries):
+            try:
+                resp = self._client.get(self.STATIC_URL, params=params)
+            except Exception:  # noqa: BLE001
+                if attempt < _retries - 1:
+                    _t.sleep(2 ** attempt)
+                    continue
+                return None
+            if resp.status_code == 200:
+                return Image.open(BytesIO(resp.content)).convert("RGB")
+            if resp.status_code in (429, 403, 500, 503):
+                if attempt < _retries - 1:
+                    wait = 5 * (2 ** attempt)  # 5s, 10s, 20s
+                    _t.sleep(wait)
+                    continue
             return None
-        return Image.open(BytesIO(resp.content)).convert("RGB")
+        return None
 
     def fetch_frames(
         self,
@@ -182,6 +197,7 @@ class StreetViewClient:
         with an added ``image`` (PIL). Disk is only written when ``cache_dir`` is
         provided (dev only — contest runs fetch fresh).
         """
+        import time as _t
         if not tasks:
             return []
         workers = workers or self.workers
@@ -189,10 +205,17 @@ class StreetViewClient:
             cache_dir.mkdir(parents=True, exist_ok=True)
         total = len(tasks)
         done = 0
+        failures = 0
         lock = threading.Lock()
         out: list[dict] = []
+        throttle_until = 0.0  # shared timestamp: all workers pause until this time
 
         def _fetch(task: dict) -> dict | None:
+            nonlocal throttle_until, failures
+            # Honor global throttle from rate-limit detection
+            now = _t.time()
+            if throttle_until > now:
+                _t.sleep(throttle_until - now)
             img = self.fetch_image(
                 task["lat"],
                 task["lng"],
@@ -201,6 +224,12 @@ class StreetViewClient:
                 fov=fov,
             )
             if img is None:
+                with lock:
+                    failures += 1
+                    # If >20% failures in first 500 requests, trigger a global cooldown
+                    if failures > 100 and done < 500 and throttle_until < _t.time():
+                        throttle_until = _t.time() + 15.0
+                        _log(f"[{label}] rate-limit detected ({failures} failures), pausing 15s...")
                 return None
             entry = dict(task)
             entry["image"] = img
