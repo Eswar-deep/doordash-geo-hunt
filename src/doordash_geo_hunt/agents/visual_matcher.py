@@ -414,16 +414,117 @@ def run_vlm_guided_densification(
             )
 
         clip_top_score = scored[0].score if scored else 0.0
-        _log(f"[densify] CLIP top-200 done, top={clip_top_score:.4f}. Starting LoFTR re-rank...")
+        _log(f"[densify] CLIP top-200 done, top={clip_top_score:.4f}.")
 
-        # LoFTR re-ranking: count geometrically verified keypoint matches
+        # ---- STAGE 2: Zoom re-fetch + Template matching ----
+        # CLIP can't distinguish brick walls. Solution: re-fetch the top-50
+        # candidates at FOV=30 (3x zoom), then use multi-patch template matching
+        # to find which zoomed frame matches SPECIFIC features from the clue.
+        from ..matching.template_matcher import rerank_by_template
+
+        # Take top-50 CLIP candidates for zoom re-fetch
+        zoom_candidates = scored[:50]
+        _log(f"[zoom] Re-fetching top {len(zoom_candidates)} at FOV=30 (3x zoom)...")
+
+        # Build zoom tasks: same pano/heading/pitch but FOV=30 for 3x detail
+        zoom_tasks = [
+            {
+                "lat": m.lat, "lng": m.lng,
+                "heading": m.heading or 0.0,
+                "pitch": getattr(m, 'pitch', 0.0) if hasattr(m, 'pitch') else 0.0,
+                "pano_id": m.source_id if m.source_id else None,
+            }
+            for m in zoom_candidates
+        ]
+
+        zoomed_frames = client.fetch_frames(zoom_tasks, fov=30, workers=cfg.workers, label="zoom")
+
+        if zoomed_frames:
+            _log(f"[zoom] Got {len(zoomed_frames)} zoomed frames. Running template match...")
+
+            # Run multi-patch template matching on zoomed frames
+            zoom_dicts = [
+                {"image": f.get("image"), "lat": f["lat"], "lng": f["lng"],
+                 "heading": f.get("heading", 0), "score": 0.0}
+                for f in zoomed_frames if f.get("image") is not None
+            ]
+
+            template_results = rerank_by_template(
+                ctx.query_image, zoom_dicts, top_k=10, num_patches=8, patch_size=64
+            )
+
+            # Check if template matching found a clear winner
+            template_discriminative = False
+            best_matched = 0
+            if template_results:
+                best_matched = template_results[0][1].num_matched
+                second_matched = template_results[1][1].num_matched if len(template_results) > 1 else 0
+                # Discriminative if top matches 4+ patches AND has 2+ more than runner-up
+                template_discriminative = best_matched >= 4 and (best_matched - second_matched) >= 2
+                _log(
+                    f"[template] top={best_matched}/8 patches, 2nd={second_matched}/8, "
+                    f"discriminative={template_discriminative}"
+                )
+
+            if template_discriminative:
+                _log(f"[densify] Template matching found clear winner! {best_matched}/8 patches matched.")
+                retained_images: dict[tuple[float, float], "Image.Image"] = {}
+                candidates = []
+                for orig_idx, result in template_results[:8]:
+                    cand = zoom_dicts[orig_idx]
+                    conf = min(result.match_ratio + 0.3, 0.99)
+                    img = cand.get("image")
+                    if img is not None:
+                        retained_images[(round(cand["lat"], 6), round(cand["lng"], 6))] = img
+                    candidates.append(
+                        LocationCandidate(
+                            lat=cand["lat"],
+                            lng=cand["lng"],
+                            confidence=round(conf, 4),
+                            agent=AgentName.STREETVIEW_MATCHER,
+                            heading=cand["heading"],
+                            evidence=(
+                                f"Template {result.num_matched}/{result.num_patches} patches "
+                                f"score={result.total_score:.3f}"
+                            ),
+                            metadata={
+                                "template_matched": result.num_matched,
+                                "template_total": result.total_score,
+                                "densified": True,
+                                "_sv_image": img,
+                            },
+                        )
+                    )
+                # Free
+                for m in scored:
+                    m.image = None
+
+                method = "Template"
+                _log(
+                    f"[densify] done {_time.time() - started:.1f}s "
+                    f"method={method} template_matched={best_matched}/8 clip_top={clip_top_score:.4f} "
+                    f"candidates={len(candidates)}"
+                )
+                return AgentResult(
+                    agent=AgentName.STREETVIEW_MATCHER,
+                    candidates=candidates,
+                    notes=(
+                        f"Densification ({method}): {len(panos)} panos, {len(all_tasks)} frames, "
+                        f"template_matched={best_matched}/8, clip_top={clip_top_score:.4f}"
+                    ),
+                    runtime_s=_time.time() - started,
+                )
+        else:
+            _log("[zoom] No zoomed frames returned, falling back to LoFTR/CLIP")
+
+        # ---- STAGE 3: LoFTR (fallback if template matching isn't discriminative) ----
+        _log("[densify] Template not discriminative, trying LoFTR...")
         from ..matching.feature_matcher import rerank_candidates
         loftr_candidates = [
             {"image": m.image, "lat": m.lat, "lng": m.lng, "heading": m.heading, "score": m.score}
             for m in scored if m.image is not None
         ]
 
-        # Only run LoFTR if we have enough candidates with images
         loftr_discriminative = False
         best_inliers = 0
         if len(loftr_candidates) >= 10:
@@ -432,29 +533,25 @@ def run_vlm_guided_densification(
                 inlier_counts = [r.num_inliers for _, r in loftr_results[:10]]
                 best_inliers = max(inlier_counts)
                 worst_top10 = min(inlier_counts)
-                # LoFTR is discriminative only if the top has significantly more inliers
-                # than the others. If all are within 5 of each other, it's just noise.
                 loftr_discriminative = (best_inliers - worst_top10) >= 10
                 _log(
                     f"[loftr] spread: best={best_inliers} worst_top10={worst_top10} "
                     f"gap={best_inliers - worst_top10} discriminative={loftr_discriminative}"
                 )
         else:
-            _log(f"[loftr] only {len(loftr_candidates)} candidates with images, skipping LoFTR")
+            _log(f"[loftr] only {len(loftr_candidates)} candidates with images, skipping")
             loftr_results = []
 
-        # Build retained images lookup from CLIP top results
+        # Build retained images lookup
         retained_images: dict[tuple[float, float], "Image.Image"] = {}
 
         if loftr_discriminative and loftr_results:
-            # LoFTR found a clear winner — use LoFTR ranking
             _log(f"[densify] LoFTR discriminative! Using LoFTR ranking.")
             for orig_idx, result in loftr_results[:10]:
                 cand = loftr_candidates[orig_idx]
                 if cand.get("image") is not None:
                     retained_images[(round(cand["lat"], 6), round(cand["lng"], 6))] = cand["image"]
 
-            # Free remaining
             for m in scored:
                 m.image = None
             for c in loftr_candidates:
@@ -480,7 +577,6 @@ def run_vlm_guided_densification(
                         ),
                         metadata={
                             "loftr_inliers": result.num_inliers,
-                            "loftr_tentative": result.num_tentative,
                             "clip_score": round(cand["score"], 4),
                             "densified": True,
                             "_sv_image": img,
@@ -488,13 +584,12 @@ def run_vlm_guided_densification(
                     )
                 )
         else:
-            # LoFTR inconclusive — fall back to pure CLIP ranking (proven 95-137m)
-            _log(f"[densify] LoFTR inconclusive (all ~{best_inliers} inliers), using CLIP ranking")
+            # ---- STAGE 4: Pure CLIP fallback (proven 95-137m) ----
+            _log(f"[densify] All matchers inconclusive, using CLIP ranking")
             for m in scored[:10]:
                 if m.image is not None:
                     retained_images[(round(m.lat, 6), round(m.lng, 6))] = m.image
 
-            # Free remaining
             for m in scored[10:]:
                 m.image = None
             for c in loftr_candidates:
