@@ -49,8 +49,8 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     import os
 
     cpu = os.cpu_count() or 8
-    parser.add_argument("--sv-workers", type=int, default=min(32, cpu * 4))
-    parser.add_argument("--clip-batch-size", type=int, default=32)
+    parser.add_argument("--sv-workers", type=int, default=min(48, cpu * 4))
+    parser.add_argument("--clip-batch-size", type=int, default=128)
     parser.add_argument("--ingest-workers", type=int, default=4)
     parser.add_argument("--judge-workers", type=int, default=4)
 
@@ -63,11 +63,12 @@ def _add_run_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--sv-heading-step", type=int, default=None, help="Derive heading count from degree step")
     parser.add_argument("--sv-refine-headings", dest="sv_refine", action="store_true", default=True)
     parser.add_argument("--no-sv-refine-headings", dest="sv_refine", action="store_false")
-    parser.add_argument("--sv-refine-span", type=int, default=30)
-    parser.add_argument("--sv-refine-step", type=int, default=10)
-    parser.add_argument("--sv-pitch-refine", default="0,-10")
-    parser.add_argument("--sv-max-frames", type=int, default=6000)
+    parser.add_argument("--sv-refine-span", type=int, default=40)
+    parser.add_argument("--sv-refine-step", type=int, default=5)
+    parser.add_argument("--sv-pitch-refine", default="0,10,20,30,40,-10")
+    parser.add_argument("--sv-max-frames", type=int, default=10000)
     parser.add_argument("--sv-step-m", type=float, default=None)
+    parser.add_argument("--sv-max-panos", type=int, default=1200)
     parser.add_argument("--sv-cache", action="store_true", default=False, help="Dev only: cache SV frames")
 
     # Per-agent timeouts
@@ -92,6 +93,7 @@ def _build_config(args: argparse.Namespace) -> PipelineConfig:
         refine_step=args.sv_refine_step,
         pitch_refine=pitches,
         max_frames=args.sv_max_frames,
+        max_panos=args.sv_max_panos,
         step_m=args.sv_step_m,
         workers=args.sv_workers,
         clip_batch_size=args.clip_batch_size,

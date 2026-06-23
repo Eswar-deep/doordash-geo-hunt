@@ -17,21 +17,22 @@ class StreetViewConfig:
     headings_override: int | None = None  # used when coarse_fine is off
     heading_step: int | None = None  # derive heading count from a degree step
     refine_headings: bool = True
-    refine_span: int = 30
-    refine_step: int = 10
-    pitch_refine: tuple[float, ...] = (0.0, 15.0, 30.0, -10.0)
-    max_frames: int = 6000
+    refine_span: int = 40
+    refine_step: int = 5
+    pitch_refine: tuple[float, ...] = (0.0, 10.0, 20.0, 30.0, 40.0, -10.0)
+    max_frames: int = 10000
     step_m: float | None = None
-    workers: int = 32
-    clip_batch_size: int = 32
+    workers: int = 48
+    clip_batch_size: int = 128
     cache: bool = False
     fov_coarse: int = 120
     fov_fine: int = 90
-    refine_max_frames: int = 80
-    max_panos: int = 800
-    headings: int = 16
-    # Pitch values for the exhaustive pass (DoorDash photos often look UP at walls)
-    pitch_sweep: tuple[float, ...] = (0.0, 25.0)
+    refine_max_frames: int = 150
+    max_panos: int = 1200
+    headings: int = 24
+    # Pitch values for the exhaustive pass — 3 tilt levels cover
+    # ground-level (0°), mid-tilt (20°), and steep-tilt (40°) views
+    pitch_sweep: tuple[float, ...] = (0.0, 20.0, 40.0)
 
 
 @dataclass
