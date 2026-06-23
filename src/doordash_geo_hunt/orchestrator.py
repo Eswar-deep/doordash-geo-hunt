@@ -321,7 +321,7 @@ def run_contest(
     if densify_centers and ctx.sv_client is not None:
         try:
             from .agents.visual_matcher import run_vlm_guided_densification
-            densify_result = run_vlm_guided_densification(ctx, densify_centers, cfg.sv, radius_m=300.0)
+            densify_result = run_vlm_guided_densification(ctx, densify_centers, cfg.sv, radius_m=ctx.region.radius_m)
             _log(
                 f"[densify] complete: {len(densify_result.candidates)} candidates "
                 f"in {densify_result.runtime_s:.1f}s"
@@ -383,7 +383,7 @@ def run_contest(
             confidence=best.confidence,
             reasoning=(
                 f"VLM-guided densification ({densify_result.notes}). "
-                f"Densified within 300m of VLM+CLIP estimates, exhaustive heading/pitch coverage. "
+                f"Densified within full {ctx.region.radius_m:.0f}m region, exhaustive heading/pitch coverage. "
                 f"{best.evidence}"
             ),
             winner_agent=AgentName.STREETVIEW_MATCHER,
