@@ -297,7 +297,61 @@ def run_contest(
             on_stage("p3_final", region, interim, agent_results)
         return region, agent_results, interim
 
-    _log(f"[stage] agents complete in {time.time() - start:.1f}s; judging")
+    _log(f"[stage] agents complete in {time.time() - start:.1f}s; densifying around VLM estimate")
+
+    # ---- VLM-guided densification + VLM verification ---------------------------
+    # Use VLM's candidates (much more accurate than CLIP for location) as density centers.
+    # Then CLIP finds the exact frame, and VLM verifies visually.
+    vlm_cands = []
+    for r in agent_results:
+        if r.agent in (AgentName.VLM_GEOGUESSER, AgentName.LANDMARK_OCR):
+            vlm_cands.extend(r.candidates)
+
+    densify_result = None
+    if vlm_cands and ctx.sv_client is not None:
+        try:
+            from .agents.visual_matcher import run_vlm_guided_densification
+            densify_result = run_vlm_guided_densification(ctx, vlm_cands, cfg.sv, radius_m=150.0)
+            _log(
+                f"[densify] complete: {len(densify_result.candidates)} candidates "
+                f"in {densify_result.runtime_s:.1f}s"
+            )
+            if densify_result.candidates:
+                agent_results.append(densify_result)
+                # Emit intermediate verdict from densification
+                if on_stage:
+                    interim_d = _interim_verdict(
+                        region,
+                        [densify_result],
+                        stage="p3_densify",
+                        agents_pending=["vlm_verify"],
+                    )
+                    if interim_d:
+                        on_stage("p3_densify", region, interim_d, agent_results)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"[densify] failed: {exc}")
+
+    # VLM verification of densified top candidates
+    verify_cands = densify_result.candidates if densify_result and densify_result.candidates else []
+    if not verify_cands:
+        # Fall back to CLIP's top candidates from the broad sweep
+        for r in agent_results:
+            if r.agent == AgentName.STREETVIEW_MATCHER and r.candidates:
+                verify_cands = r.candidates
+                break
+
+    if verify_cands and ctx.sv_client is not None:
+        try:
+            from .agents.vlm_verifier import verify_candidates_with_vlm
+            verify_result = verify_candidates_with_vlm(ctx, verify_cands, cfg.sv, max_verify=5)
+            _log(f"[vlm-verify] complete: {verify_result.notes}")
+            if verify_result.candidates:
+                agent_results.append(verify_result)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"[vlm-verify] failed: {exc}")
+
+    # ---- Final judge ----------------------------------------------------------
+    _log("[stage] running final judge")
     verdict = judge_results(
         contest, region, agent_results, enabled_agents=enabled, judge_workers=cfg.judge_workers
     )

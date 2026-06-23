@@ -296,3 +296,153 @@ def run_mapillary_matcher(ctx: PipelineContext, cache_dir: Path | None = None) -
             error=str(exc),
             runtime_s=time.time() - started,
         )
+
+
+def run_vlm_guided_densification(
+    ctx: PipelineContext,
+    vlm_candidates: list,
+    cfg: StreetViewConfig | None = None,
+    radius_m: float = 150.0,
+) -> AgentResult:
+    """Densify Street View sampling around VLM's best guess, then CLIP-rank.
+
+    This exploits VLM's semantic understanding (which gets ~75m accuracy) by
+    exhaustively searching ALL panos × ALL headings × ALL pitches in a small
+    radius around the VLM's estimate. CLIP then picks the exact best-match
+    frame from this focused, complete pool.
+    """
+    import time as _time
+    started = _time.time()
+    cfg = cfg or StreetViewConfig()
+
+    if not vlm_candidates:
+        return AgentResult(
+            agent=AgentName.STREETVIEW_MATCHER,
+            candidates=[],
+            notes="No VLM candidates for densification.",
+            runtime_s=_time.time() - started,
+        )
+
+    own_client = False
+    client = ctx.sv_client
+    try:
+        if client is None:
+            from ..streetview import StreetViewClient
+            client = StreetViewClient(workers=cfg.workers)
+            own_client = True
+        matcher = ctx.clip_matcher or get_clip_matcher()
+        query_vec = matcher.embed_multi_crop(ctx.query_image, ctx.query_crops)
+
+        # Take top-3 VLM candidates as density centers
+        centers = [(c.lat, c.lng) for c in vlm_candidates[:3]]
+        _log(f"[densify] centers={len(centers)} radius={radius_m}m")
+
+        # Find ALL panos within radius of VLM's guesses
+        panos = client.panoramas_near(
+            centers,
+            region=ctx.region,
+            radius_m=radius_m,
+            step_m=15.0,  # Very fine grid — every 15m
+            max_panos=500,
+            workers=cfg.workers,
+        )
+        _log(f"[densify] found {len(panos)} panos near VLM estimate")
+
+        if not panos:
+            return AgentResult(
+                agent=AgentName.STREETVIEW_MATCHER,
+                candidates=[],
+                notes="No panos found near VLM estimate.",
+                runtime_s=_time.time() - started,
+            )
+
+        # ALL headings × ALL pitches for each pano — exhaustive local coverage
+        from ..streetview import headings_evenly
+        hdgs = headings_evenly(24)  # Every 15°
+        pitches_local = [0.0, 10.0, 20.0, 30.0, 40.0, -10.0]
+
+        all_tasks: list[dict] = []
+        for pano in panos:
+            for h in hdgs:
+                for p in pitches_local:
+                    all_tasks.append({
+                        "lat": pano["lat"], "lng": pano["lng"],
+                        "heading": float(h), "pitch": float(p),
+                        "pano_id": pano.get("pano_id"),
+                    })
+
+        # Cap at 15000 frames if we have too many panos (shouldn't happen with 500 max)
+        if len(all_tasks) > 15000:
+            import random
+            random.shuffle(all_tasks)
+            all_tasks = all_tasks[:15000]
+
+        _log(f"[densify] fetching {len(all_tasks)} frames ({len(panos)} panos × 24 headings × 6 pitches)")
+        frames = client.fetch_frames(
+            all_tasks, fov=90, workers=cfg.workers, label="densify"
+        )
+
+        if not frames:
+            return AgentResult(
+                agent=AgentName.STREETVIEW_MATCHER,
+                candidates=[],
+                notes="All densify frames failed to download.",
+                runtime_s=_time.time() - started,
+            )
+
+        # CLIP rank — get top 20 for later VLM verification
+        scored = list(matcher.rank_batched(
+            query_vec, frames, top_k=20, batch_size=cfg.clip_batch_size
+        ))
+
+        if not scored:
+            return AgentResult(
+                agent=AgentName.STREETVIEW_MATCHER,
+                candidates=[],
+                notes="No densify matches.",
+                runtime_s=_time.time() - started,
+            )
+
+        from ..geo import cluster_scored_points
+        clustered = cluster_scored_points(
+            [(m.lat, m.lng, m.score, m.heading) for m in scored], merge_radius_m=25.0
+        )
+        sorted_scores = sorted(m.score for m in scored)
+        top_score = clustered[0].score
+
+        candidates = []
+        for pt in clustered[:8]:
+            conf = percentile_confidence(pt.score, sorted_scores)
+            candidates.append(
+                LocationCandidate(
+                    lat=pt.lat,
+                    lng=pt.lng,
+                    confidence=conf,
+                    agent=AgentName.STREETVIEW_MATCHER,
+                    heading=pt.heading,
+                    evidence=f"VLM-guided densify CLIP={pt.score:.4f} conf={conf:.2f}",
+                    metadata={"clip_score": round(pt.score, 4), "densified": True},
+                )
+            )
+
+        _log(f"[densify] done {_time.time() - started:.1f}s top_clip={top_score:.4f} candidates={len(candidates)}")
+        return AgentResult(
+            agent=AgentName.STREETVIEW_MATCHER,
+            candidates=candidates,
+            notes=f"VLM-guided densification: {len(panos)} panos, {len(all_tasks)} frames, top={top_score:.4f}",
+            runtime_s=_time.time() - started,
+        )
+    except Exception as exc:  # noqa: BLE001
+        _log(f"[densify] error: {exc}")
+        return AgentResult(
+            agent=AgentName.STREETVIEW_MATCHER,
+            candidates=[],
+            error=str(exc),
+            runtime_s=_time.time() - started,
+        )
+    finally:
+        if own_client and client is not None:
+            try:
+                client.close()
+            except Exception:  # noqa: BLE001
+                pass
