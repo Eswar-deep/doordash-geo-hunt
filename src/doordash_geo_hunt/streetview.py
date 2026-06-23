@@ -33,17 +33,21 @@ class StreetViewClient:
         self._keys = [k.strip() for k in raw_keys.split(",") if k.strip()]
         if not self._keys:
             raise RuntimeError("GOOGLE_MAPS_API_KEY is required for Street View agent.")
-        self.api_key = self._keys[0]  # primary key for metadata
+        self.api_key = self._keys[0]
         self._key_idx = 0
         self._key_lock = threading.Lock()
         self.workers = max(1, int(workers))
+        # URL signing secret (removes 25K unsigned request limit)
+        self._signing_secret = os.getenv("GOOGLE_MAPS_SIGNING_SECRET", "").strip() or None
         limits = httpx.Limits(
             max_connections=self.workers,
             max_keepalive_connections=self.workers,
         )
         self._client = httpx.Client(limits=limits, timeout=60, follow_redirects=True)
-        if len(self._keys) > 1:
-            _log(f"[sv] {len(self._keys)} API keys loaded (rotating, {25000 * len(self._keys)}k unsigned quota)")
+        if self._signing_secret:
+            _log("[sv] URL signing enabled (no unsigned quota limit)")
+        elif len(self._keys) > 1:
+            _log(f"[sv] {len(self._keys)} API keys loaded (rotating, ~{25000 * len(self._keys)//1000}K unsigned quota)")
 
     def _next_key(self) -> str:
         """Round-robin key selection for parallel requests."""
@@ -51,6 +55,20 @@ class StreetViewClient:
             key = self._keys[self._key_idx % len(self._keys)]
             self._key_idx += 1
             return key
+
+    def _sign_url(self, url: str) -> str:
+        """Sign a Maps API URL using HMAC-SHA1 (removes 25K unsigned limit)."""
+        import base64
+        import hashlib
+        import hmac
+        import urllib.parse
+
+        parsed = urllib.parse.urlparse(url)
+        url_to_sign = parsed.path + "?" + parsed.query
+        decoded_key = base64.urlsafe_b64decode(self._signing_secret)
+        sig = hmac.new(decoded_key, url_to_sign.encode(), hashlib.sha1).digest()
+        encoded_sig = base64.urlsafe_b64encode(sig).decode()
+        return url + "&signature=" + encoded_sig
 
     def close(self) -> None:
         try:
@@ -170,6 +188,8 @@ class StreetViewClient:
     ) -> Image.Image | None:
         import random
         import time as _t
+        import urllib.parse
+
         params = {
             "location": f"{lat},{lng}",
             "heading": heading,
@@ -178,9 +198,20 @@ class StreetViewClient:
             "size": f"{width}x{height}",
             "key": self._next_key(),
         }
+
+        if self._signing_secret:
+            query = urllib.parse.urlencode(params)
+            full_url = f"{self.STATIC_URL}?{query}"
+            full_url = self._sign_url(full_url)
+        else:
+            full_url = None  # use params-based request
+
         for attempt in range(_retries):
             try:
-                resp = self._client.get(self.STATIC_URL, params=params)
+                if full_url:
+                    resp = self._client.get(full_url)
+                else:
+                    resp = self._client.get(self.STATIC_URL, params=params)
             except Exception:  # noqa: BLE001
                 if attempt < _retries - 1:
                     _t.sleep(1 + random.random())
