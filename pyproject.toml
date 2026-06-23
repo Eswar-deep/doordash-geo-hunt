@@ -20,6 +20,7 @@ dependencies = [
   "open-clip-torch>=2.24",
   "scikit-image>=0.22",
   "easyocr>=1.7",
+  "kornia>=0.7.3",
 ]
 
 [project.optional-dependencies]

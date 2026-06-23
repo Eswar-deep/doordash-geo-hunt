@@ -237,8 +237,8 @@ def _cmd_ingest(args: argparse.Namespace) -> int:
 
 
 def _cmd_prewarm(args: argparse.Namespace) -> int:
-    """Load model weights (CLIP + torch, optionally EasyOCR). NOT Street View images."""
-    print("Prewarming models (CLIP + torch)...")
+    """Load model weights (CLIP + torch + LoFTR, optionally EasyOCR). NOT Street View images."""
+    print("Prewarming models (CLIP + LoFTR + torch)...")
     try:
         from doordash_geo_hunt.matching.clip_matcher import get_clip_matcher
 
@@ -246,6 +246,14 @@ def _cmd_prewarm(args: argparse.Namespace) -> int:
         print("  CLIP ready.")
     except Exception as exc:  # noqa: BLE001
         print(f"  CLIP failed: {exc}", file=sys.stderr)
+        return 1
+    try:
+        from doordash_geo_hunt.matching.feature_matcher import _get_matcher
+
+        _get_matcher()
+        print("  LoFTR ready.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"  LoFTR failed: {exc}", file=sys.stderr)
         return 1
     if args.ocr:
         try:

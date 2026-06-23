@@ -400,9 +400,9 @@ def run_vlm_guided_densification(
                 runtime_s=_time.time() - started,
             )
 
-        # CLIP rank — get top 50, keep images for top 10 (for VLM verification without refetch)
+        # CLIP rank — get top 200, keep ALL images for LoFTR re-ranking
         scored = list(matcher.rank_batched(
-            query_vec, frames, top_k=50, batch_size=cfg.clip_batch_size, keep_images=10
+            query_vec, frames, top_k=200, batch_size=cfg.clip_batch_size, keep_images=200
         ))
 
         if not scored:
@@ -413,46 +413,73 @@ def run_vlm_guided_densification(
                 runtime_s=_time.time() - started,
             )
 
-        from ..geo import cluster_scored_points
-        clustered = cluster_scored_points(
-            [(m.lat, m.lng, m.score, m.heading) for m in scored], merge_radius_m=25.0
-        )
-        sorted_scores = sorted(m.score for m in scored)
-        top_score = clustered[0].score
+        clip_top_score = scored[0].score if scored else 0.0
+        _log(f"[densify] CLIP top-200 done, top={clip_top_score:.4f}. Starting LoFTR re-rank...")
 
-        # Build a lookup of retained images by (lat, lng, heading)
+        # LoFTR re-ranking: count geometrically verified keypoint matches
+        # This is what makes the difference — same physical location = 50+ inliers,
+        # different location with similar vibes = 0-5 inliers.
+        from ..matching.feature_matcher import rerank_candidates
+        loftr_candidates = [
+            {"image": m.image, "lat": m.lat, "lng": m.lng, "heading": m.heading, "score": m.score}
+            for m in scored if m.image is not None
+        ]
+
+        loftr_results = rerank_candidates(ctx.query_image, loftr_candidates, top_k=10)
+
+        # Build final candidates from LoFTR ranking
         retained_images: dict[tuple[float, float], "Image.Image"] = {}
-        for m in scored:
-            if m.image is not None:
-                retained_images[(round(m.lat, 6), round(m.lng, 6))] = m.image
-                m.image = None  # transfer ownership
+        for orig_idx, result in loftr_results:
+            cand = loftr_candidates[orig_idx]
+            if cand.get("image") is not None:
+                retained_images[(round(cand["lat"], 6), round(cand["lng"], 6))] = cand["image"]
 
+        # Free remaining images
+        for m in scored:
+            m.image = None
+        for c in loftr_candidates:
+            if (round(c["lat"], 6), round(c["lng"], 6)) not in retained_images:
+                c.pop("image", None)
+
+        best_inliers = loftr_results[0][1].num_inliers if loftr_results else 0
         candidates = []
-        for pt in clustered[:8]:
-            conf = percentile_confidence(pt.score, sorted_scores)
-            key = (round(pt.lat, 6), round(pt.lng, 6))
+        for orig_idx, result in loftr_results[:8]:
+            cand = loftr_candidates[orig_idx]
+            conf = min(result.num_inliers / 50.0, 0.99) if result.num_inliers > 0 else 0.1
+            key = (round(cand["lat"], 6), round(cand["lng"], 6))
             img = retained_images.get(key)
             candidates.append(
                 LocationCandidate(
-                    lat=pt.lat,
-                    lng=pt.lng,
-                    confidence=conf,
+                    lat=cand["lat"],
+                    lng=cand["lng"],
+                    confidence=round(conf, 4),
                     agent=AgentName.STREETVIEW_MATCHER,
-                    heading=pt.heading,
-                    evidence=f"VLM-guided densify CLIP={pt.score:.4f} conf={conf:.2f}",
+                    heading=cand["heading"],
+                    evidence=(
+                        f"LoFTR inliers={result.num_inliers} tentative={result.num_tentative} "
+                        f"CLIP={cand['score']:.4f}"
+                    ),
                     metadata={
-                        "clip_score": round(pt.score, 4),
+                        "loftr_inliers": result.num_inliers,
+                        "loftr_tentative": result.num_tentative,
+                        "clip_score": round(cand["score"], 4),
                         "densified": True,
-                        "_sv_image": img,  # retained image for VLM verify
+                        "_sv_image": img,
                     },
                 )
             )
 
-        _log(f"[densify] done {_time.time() - started:.1f}s top_clip={top_score:.4f} candidates={len(candidates)}")
+        _log(
+            f"[densify] done {_time.time() - started:.1f}s "
+            f"best_inliers={best_inliers} clip_top={clip_top_score:.4f} candidates={len(candidates)}"
+        )
         return AgentResult(
             agent=AgentName.STREETVIEW_MATCHER,
             candidates=candidates,
-            notes=f"VLM-guided densification: {len(panos)} panos, {len(all_tasks)} frames, top={top_score:.4f}",
+            notes=(
+                f"VLM-guided densification + LoFTR: {len(panos)} panos, {len(all_tasks)} frames, "
+                f"best_inliers={best_inliers}, clip_top={clip_top_score:.4f}"
+            ),
             runtime_s=_time.time() - started,
         )
     except Exception as exc:  # noqa: BLE001

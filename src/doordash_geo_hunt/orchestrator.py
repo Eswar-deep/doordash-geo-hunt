@@ -363,23 +363,31 @@ def run_contest(
         except Exception as exc:  # noqa: BLE001
             _log(f"[vlm-verify] failed: {exc}")
 
-    # ---- Final verdict: densify-first strategy ---------------------------------
+    # ---- Final verdict: LoFTR-first strategy ------------------------------------
+    # LoFTR inlier count is definitive: 30+ inliers means physically the same spot.
+    # If LoFTR found a strong match, trust it absolutely. Otherwise fall back to
+    # VLM verify (if strong) or raw densify ranking.
     if densify_result and densify_result.candidates:
-        # VLM verification only overrides CLIP when the VLM gives a STRONG match
-        # (>=70/100). Below that, VLM is guessing and raw CLIP is more consistent.
-        # Evidence: VLM at low confidence is a coin flip (71m in one run, 411m in another).
-        # Raw CLIP densify is consistently 95-137m.
-        use_vlm = False
-        if verify_result and verify_result.candidates:
+        best = densify_result.candidates[0]
+        best_inliers = (best.metadata or {}).get("loftr_inliers", 0)
+
+        if best_inliers >= 20:
+            # LoFTR definitive match — use directly
+            final_cands = densify_result.candidates
+            _log(f"[stage] LoFTR DEFINITIVE match: {best_inliers} inliers at ({best.lat:.6f}, {best.lng:.6f})")
+        elif verify_result and verify_result.candidates:
             top_vlm_cand = verify_result.candidates[0]
             vlm_score = (top_vlm_cand.metadata or {}).get("vlm_verify_score", 0)
             if vlm_score >= 70:
-                use_vlm = True
-                _log(f"[stage] VLM strong match (score={vlm_score}/100), using VLM ranking")
+                final_cands = verify_result.candidates
+                _log(f"[stage] VLM strong match (score={vlm_score}/100)")
             else:
-                _log(f"[stage] VLM weak match (score={vlm_score}/100), using CLIP densify ranking")
+                final_cands = densify_result.candidates
+                _log(f"[stage] LoFTR weak ({best_inliers} inliers), VLM weak ({vlm_score}/100), using LoFTR ranking")
+        else:
+            final_cands = densify_result.candidates
+            _log(f"[stage] using LoFTR ranking ({best_inliers} inliers)")
 
-        final_cands = verify_result.candidates if use_vlm else densify_result.candidates
         best = final_cands[0]
         _log(f"[stage] final pick: ({best.lat:.6f}, {best.lng:.6f}) conf={best.confidence}")
 

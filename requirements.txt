@@ -11,6 +11,7 @@ rich>=13.7
 torch>=2.2
 open-clip-torch>=2.24
 scikit-image>=0.22
+kornia>=0.7.3
 
 # OCR (Landmark agent)
 easyocr>=1.7
