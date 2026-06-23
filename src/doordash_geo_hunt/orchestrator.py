@@ -318,7 +318,6 @@ def run_contest(
             )
             if densify_result.candidates:
                 agent_results.append(densify_result)
-                # Emit intermediate verdict from densification
                 if on_stage:
                     interim_d = _interim_verdict(
                         region,
@@ -331,15 +330,19 @@ def run_contest(
         except Exception as exc:  # noqa: BLE001
             _log(f"[densify] failed: {exc}")
 
+    # Brief cooldown to avoid Google rate-limiting after 35K+ requests
+    import time as _time_mod
+    _time_mod.sleep(3)
+
     # VLM verification of densified top candidates
     verify_cands = densify_result.candidates if densify_result and densify_result.candidates else []
     if not verify_cands:
-        # Fall back to CLIP's top candidates from the broad sweep
         for r in agent_results:
             if r.agent == AgentName.STREETVIEW_MATCHER and r.candidates:
                 verify_cands = r.candidates
                 break
 
+    verify_result = None
     if verify_cands and ctx.sv_client is not None:
         try:
             from .agents.vlm_verifier import verify_candidates_with_vlm
@@ -350,19 +353,53 @@ def run_contest(
         except Exception as exc:  # noqa: BLE001
             _log(f"[vlm-verify] failed: {exc}")
 
-    # ---- Final judge ----------------------------------------------------------
-    _log("[stage] running final judge")
-    verdict = judge_results(
-        contest, region, agent_results, enabled_agents=enabled, judge_workers=cfg.judge_workers
-    )
-    verdict.stage = "p3_final"
+    # ---- Final verdict: densify-first strategy ---------------------------------
+    # When densification succeeds, it is far more accurate than the broad sweep
+    # (focused 150m radius vs 700m). Use densify as the primary answer; only fall
+    # back to the general judge if densification failed.
+    if densify_result and densify_result.candidates:
+        # Use VLM-verified candidates if available, else raw densify
+        final_cands = (
+            verify_result.candidates
+            if verify_result and verify_result.candidates
+            else densify_result.candidates
+        )
+        best = final_cands[0]
+        _log(f"[stage] using densify result: ({best.lat:.6f}, {best.lng:.6f}) conf={best.confidence}")
+
+        verdict = FinalVerdict(
+            lat=best.lat,
+            lng=best.lng,
+            confidence=best.confidence,
+            reasoning=(
+                f"VLM-guided densification ({densify_result.notes}). "
+                f"Densified within 150m of VLM estimate, exhaustive heading/pitch coverage. "
+                f"{best.evidence}"
+            ),
+            winner_agent=AgentName.STREETVIEW_MATCHER,
+            all_candidates=final_cands,
+            low_confidence=best.confidence < 0.5,
+            human_review=best.confidence < 0.5,
+            agreement_votes=1,
+            alternatives=final_cands[1:4],
+            stage="p4_final",
+            provisional=False,
+            agents_pending=[],
+        )
+    else:
+        # Densification failed — fall back to standard judge
+        _log("[stage] densification unavailable, running standard judge")
+        verdict = judge_results(
+            contest, region, agent_results, enabled_agents=enabled, judge_workers=cfg.judge_workers
+        )
+    verdict.stage = "p4_final"
     if ctx.sv_client is not None:
         try:
             ctx.sv_client.close()
         except Exception:  # noqa: BLE001
             pass
     if on_stage:
-        on_stage("p3_final", region, verdict, agent_results)
+        on_stage("p4_final", region, verdict, agent_results)
     return region, agent_results, verdict
 
 

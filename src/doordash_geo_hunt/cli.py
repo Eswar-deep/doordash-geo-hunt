@@ -131,7 +131,9 @@ _STAGE_TITLES = {
     "p1": "P1 VERDICT",
     "p2": "P2 VERDICT",
     "p3": "P3 VERDICT",
+    "p3_densify": "P3 DENSIFY VERDICT",
     "p3_final": "P3 FINAL VERDICT",
+    "p4_final": "P4 FINAL VERDICT",
     "p1_fast": "P1 FAST VERDICT",
     "p2_clip": "P2 CLIP VERDICT",
 }
@@ -161,7 +163,7 @@ def _make_stage_emitter(final_path: Path):
     def on_stage(stage, region, verdict, agent_results):
         _print_stage(stage, verdict)
         save_json_output(_stage_path(final_path, stage), region, agent_results, verdict)
-        if stage == "p3_final":
+        if stage in ("p3_final", "p4_final"):
             save_json_output(final_path, region, agent_results, verdict)
 
     return on_stage

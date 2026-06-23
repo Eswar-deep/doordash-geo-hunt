@@ -87,10 +87,10 @@ def verify_candidates_with_vlm(
     own_client = False
     client = ctx.sv_client
     try:
-        if client is None:
-            from ..streetview import StreetViewClient
-            client = StreetViewClient(workers=cfg.workers)
-            own_client = True
+        # Use a FRESH client to avoid rate-limit state from prior heavy downloads
+        from ..streetview import StreetViewClient
+        client = StreetViewClient(workers=4)
+        own_client = True
 
         # Fetch one SV frame per candidate at the candidate's heading + pitch
         sv_images: list[tuple[Path, LocationCandidate]] = []
@@ -99,26 +99,29 @@ def verify_candidates_with_vlm(
         for i, cand in enumerate(to_verify):
             heading = cand.heading if cand.heading is not None else 0.0
             pitch = float(cand.metadata.get("pitch", 25.0)) if cand.metadata else 25.0
-            img = client.fetch_image(
-                cand.lat, cand.lng,
-                heading=heading,
-                pitch=pitch,
-                fov=90,
-                width=640,
-                height=640,
-            )
-            if img is None:
-                # Try pitch=0 as fallback
+
+            # Try multiple pitch values — the clue often looks up at walls
+            img = None
+            for try_pitch in [pitch, 25.0, 0.0, 30.0]:
                 img = client.fetch_image(
                     cand.lat, cand.lng,
                     heading=heading,
-                    pitch=0.0,
+                    pitch=try_pitch,
                     fov=90,
+                    width=640,
+                    height=640,
                 )
-            if img is not None:
-                path = tmp_dir / f"sv_candidate_{i}.jpg"
-                img.save(path, quality=90)
-                sv_images.append((path, cand))
+                if img is not None:
+                    break
+                time.sleep(0.5)  # Brief pause between retries
+
+            if img is None:
+                _log(f"[vlm-verify] failed to fetch SV for candidate {i} at ({cand.lat:.6f}, {cand.lng:.6f})")
+                continue
+
+            path = tmp_dir / f"sv_candidate_{i}.jpg"
+            img.save(path, quality=90)
+            sv_images.append((path, cand))
 
         if not sv_images:
             _log("[vlm-verify] no SV images fetched successfully")
