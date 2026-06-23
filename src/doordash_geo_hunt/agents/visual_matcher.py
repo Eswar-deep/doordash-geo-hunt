@@ -140,7 +140,7 @@ def run_streetview_matcher(
         )
         frames_fetched += len(all_tasks)
         all_scores = list(matcher.rank_batched(
-            query_vec, frames, top_k=80, batch_size=cfg.clip_batch_size
+            query_vec, frames, top_k=80, batch_size=cfg.clip_batch_size, keep_images=50
         ))
 
         # ---- Refine: top-1 pano with heading ± span + pitch -------------------
@@ -189,11 +189,24 @@ def run_streetview_matcher(
         fifth = clustered[4].score if len(clustered) >= 5 else clustered[-1].score
         clip_gap = round(top_score - fifth, 4)
 
+        # Build a lookup of retained images from the broad sweep (top-50 by CLIP)
+        retained_broad: dict[tuple[float, float, float], "Image.Image"] = {}
+        for m in all_scores:
+            if m.image is not None:
+                key = (round(m.lat, 6), round(m.lng, 6), round(m.heading or 0, 1))
+                retained_broad[key] = m.image
+
         candidates: list[LocationCandidate] = []
         for pt in clustered[:8]:
             conf = percentile_confidence(pt.score, sorted_scores)
             if clip_gap < 0.02:
                 conf = round(conf * 0.85, 4)
+            # Attach retained image if available (for downstream template matching)
+            img_key = (round(pt.lat, 6), round(pt.lng, 6), round(pt.heading or 0, 1))
+            sv_img = retained_broad.get(img_key)
+            meta: dict = {"clip_score": round(pt.score, 4), "clip_score_gap": clip_gap}
+            if sv_img is not None:
+                meta["_sv_image"] = sv_img
             candidates.append(
                 LocationCandidate(
                     lat=pt.lat,
@@ -202,9 +215,26 @@ def run_streetview_matcher(
                     agent=AgentName.STREETVIEW_MATCHER,
                     heading=pt.heading,
                     evidence=f"CLIP score={pt.score:.4f} pct_conf={conf:.2f} gap={clip_gap:.3f}",
-                    metadata={"clip_score": round(pt.score, 4), "clip_score_gap": clip_gap},
+                    metadata=meta,
                 )
             )
+
+        # Also stash all retained images in top candidates for VLM/template use
+        # Store additional images beyond top-8 in the first candidate's metadata
+        if candidates and retained_broad:
+            extra_images = []
+            for m in all_scores[:50]:
+                if m.image is not None:
+                    extra_images.append({
+                        "image": m.image, "lat": m.lat, "lng": m.lng,
+                        "heading": m.heading or 0.0, "score": m.score,
+                    })
+            if extra_images:
+                candidates[0].metadata["_retained_frames"] = extra_images
+
+        # Free remaining
+        for m in all_scores:
+            m.image = None
 
         return AgentResult(
             agent=AgentName.STREETVIEW_MATCHER,

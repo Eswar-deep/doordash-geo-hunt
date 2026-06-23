@@ -299,10 +299,9 @@ def run_contest(
 
     _log(f"[stage] agents complete in {time.time() - start:.1f}s; densifying around VLM estimate")
 
-    # ---- Zoom + Template matching (runs FIRST — only 50 API calls) ----------------
-    # Re-fetch the broad sweep's top CLIP candidates at FOV=30 (3x zoom) and run
-    # multi-patch template matching. If this finds a clear winner, we skip the
-    # expensive 38K-frame densification entirely.
+    # ---- Template matching on retained broad-sweep images (NO re-fetch) -----------
+    # The broad sweep keeps top-50 images in memory. Use them directly for template
+    # matching — no API calls needed. This avoids rate-limit issues entirely.
     zoom_template_result = None
     broad_sv_result = None
     for r in agent_results:
@@ -310,26 +309,32 @@ def run_contest(
             broad_sv_result = r
             break
 
-    if broad_sv_result and broad_sv_result.candidates and ctx.sv_client is not None:
+    if broad_sv_result and broad_sv_result.candidates:
         try:
             from .matching.template_matcher import rerank_by_template
-            # Take top-8 broad sweep candidates for zoom (they have lat/lng/heading)
-            top_cands = broad_sv_result.candidates[:8]
-            zoom_tasks = [
-                {"lat": c.lat, "lng": c.lng, "heading": c.heading or 0.0, "pitch": 0.0}
-                for c in top_cands
-            ]
-            _log(f"[zoom] Fetching {len(zoom_tasks)} candidates at FOV=30 (3x zoom)...")
-            zoomed_frames = ctx.sv_client.fetch_frames(zoom_tasks, fov=30, workers=cfg.sv.workers, label="zoom")
+            # Extract retained frames from broad sweep metadata
+            retained_frames = []
+            first_cand = broad_sv_result.candidates[0]
+            if first_cand.metadata.get("_retained_frames"):
+                retained_frames = first_cand.metadata["_retained_frames"]
+            else:
+                # Fallback: use individual candidate images
+                for c in broad_sv_result.candidates:
+                    img = c.metadata.get("_sv_image")
+                    if img is not None:
+                        retained_frames.append({
+                            "image": img, "lat": c.lat, "lng": c.lng,
+                            "heading": c.heading or 0.0,
+                        })
 
-            if zoomed_frames:
+            if retained_frames:
+                _log(f"[template] Running template match on {len(retained_frames)} retained broad-sweep frames...")
                 zoom_dicts = [
-                    {"image": f.get("image"), "lat": f["lat"], "lng": f["lng"],
+                    {"image": f["image"], "lat": f["lat"], "lng": f["lng"],
                      "heading": f.get("heading", 0)}
-                    for f in zoomed_frames if f.get("image") is not None
+                    for f in retained_frames if f.get("image") is not None
                 ]
                 if zoom_dicts:
-                    _log(f"[zoom] Got {len(zoom_dicts)} zoomed frames. Running template match...")
                     template_results = rerank_by_template(ctx.query_image, zoom_dicts, top_k=8)
 
                     if template_results:
@@ -340,7 +345,7 @@ def run_contest(
 
                         if template_discriminative:
                             from .models import LocationCandidate
-                            _log(f"[zoom] Template matched {best_matched}/8 patches — using as final answer")
+                            _log(f"[template] Matched {best_matched}/8 patches — using as final answer")
                             zoom_cands = []
                             for orig_idx, result in template_results[:8]:
                                 cand = zoom_dicts[orig_idx]
@@ -359,14 +364,14 @@ def run_contest(
                             zoom_template_result = AR(
                                 agent=AgentName.STREETVIEW_MATCHER,
                                 candidates=zoom_cands,
-                                notes=f"Zoom+template: {best_matched}/8 patches matched",
+                                notes=f"Template match: {best_matched}/8 patches matched",
                                 runtime_s=0.0,
                             )
                             agent_results.append(zoom_template_result)
             else:
-                _log("[zoom] No zoomed frames returned")
+                _log("[template] No retained images from broad sweep")
         except Exception as exc:  # noqa: BLE001
-            _log(f"[zoom] failed: {exc}")
+            _log(f"[template] failed: {exc}")
 
     # ---- VLM-guided densification + VLM verification ---------------------------
     # Combine VLM's candidates AND the broad sweep's best CLIP candidates as
