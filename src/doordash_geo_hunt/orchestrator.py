@@ -365,18 +365,23 @@ def run_contest(
 
     # ---- Final verdict: densify-first strategy ---------------------------------
     if densify_result and densify_result.candidates:
-        # Always prefer VLM-verified ranking when available.
-        # VLM's relative ordering is consistently better than CLIP even when
-        # its absolute confidence is low (CLIP can't distinguish similar walls).
+        # VLM verification only overrides CLIP when the VLM gives a STRONG match
+        # (>=70/100). Below that, VLM is guessing and raw CLIP is more consistent.
+        # Evidence: VLM at low confidence is a coin flip (71m in one run, 411m in another).
+        # Raw CLIP densify is consistently 95-137m.
+        use_vlm = False
         if verify_result and verify_result.candidates:
-            final_cands = verify_result.candidates
-            _log("[stage] using VLM-verified ranking")
-        else:
-            final_cands = densify_result.candidates
-            _log("[stage] using raw CLIP densify ranking (no VLM verify)")
+            top_vlm_cand = verify_result.candidates[0]
+            vlm_score = (top_vlm_cand.metadata or {}).get("vlm_verify_score", 0)
+            if vlm_score >= 70:
+                use_vlm = True
+                _log(f"[stage] VLM strong match (score={vlm_score}/100), using VLM ranking")
+            else:
+                _log(f"[stage] VLM weak match (score={vlm_score}/100), using CLIP densify ranking")
 
+        final_cands = verify_result.candidates if use_vlm else densify_result.candidates
         best = final_cands[0]
-        _log(f"[stage] using densify result: ({best.lat:.6f}, {best.lng:.6f}) conf={best.confidence}")
+        _log(f"[stage] final pick: ({best.lat:.6f}, {best.lng:.6f}) conf={best.confidence}")
 
         verdict = FinalVerdict(
             lat=best.lat,
