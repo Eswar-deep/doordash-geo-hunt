@@ -17,22 +17,21 @@ class StreetViewConfig:
     headings_override: int | None = None  # used when coarse_fine is off
     heading_step: int | None = None  # derive heading count from a degree step
     refine_headings: bool = True
-    refine_span: int = 40
-    refine_step: int = 5
-    pitch_refine: tuple[float, ...] = (0.0, 10.0, 20.0, 30.0, 40.0, -10.0)
-    max_frames: int = 10000
+    refine_span: int = 45
+    refine_step: int = 3
+    pitch_refine: tuple[float, ...] = (0.0, 10.0, 20.0, 30.0, 40.0, -10.0, -20.0)
+    max_frames: int = 20000
     step_m: float | None = None
-    workers: int = 48
-    clip_batch_size: int = 128
+    workers: int = 64
+    clip_batch_size: int = 256
     cache: bool = False
     fov_coarse: int = 120
     fov_fine: int = 90
-    refine_max_frames: int = 150
-    max_panos: int = 1200
+    refine_max_frames: int = 200
+    max_panos: int = 1500
     headings: int = 24
-    # Pitch values for the exhaustive pass — 3 tilt levels cover
-    # ground-level (0°), mid-tilt (20°), and steep-tilt (40°) views
-    pitch_sweep: tuple[float, ...] = (0.0, 20.0, 40.0)
+    # Pitch values for the exhaustive pass — 4 tilt levels for maximum coverage
+    pitch_sweep: tuple[float, ...] = (0.0, 15.0, 30.0, 45.0)
 
 
 @dataclass
