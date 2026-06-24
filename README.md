@@ -1,380 +1,316 @@
-# doordash-geo-hunt
+# GeoHunt: Multi-Agent Visual Geolocation Pipeline
 
-Multi-agent geolocation pipeline for DoorDash FIFA ticket contest drops.
+**Pinpoint a real-world location from a single photo in under 90 seconds.**
 
-Given a **map photo** (red warm-zone circle) and a **location photo** (bag on pedestal + background clues), the system runs **agents in parallel** (default: Street View + VLM), emits **staged verdicts (P1/P2/P3)** automatically, then a **judge** picks the final lat/lng.
+GeoHunt is an automated geolocation system that combines CLIP visual search, LoFTR keypoint matching, multi-patch template matching, and Vision LLMs (Claude Opus) to identify precise GPS coordinates from contest photos. Built for the DoorDash FIFA "Seat Drop" competition, where contestants race to identify locations from background clues in posted images.
 
-## Quick start (contest day)
+---
 
-```powershell
-# Morning: warm CLIP/torch weights (NOT Street View images)
-python cli.py prewarm
+## How It Works
 
-# Drop: ingest photos + run staged parallel pipeline
-python cli.py ingest "https://x.com/DoorDash/status/TWEET_ID" `
-  --out samples/live-drop --run --tweet-id `
-  --agents streetview,vlm --staged --staged-parallel `
-  --sv-workers 32 --sv-max-frames 1000 --clip-batch-size 32
+Given a **map photo** (showing a search radius) and a **location photo** (bag on a pedestal with background clues), the pipeline:
+
+1. **Extracts the search region** from the map using a Vision LLM (center, radius)
+2. **Deploys parallel agents** that independently search for the location
+3. **Emits staged verdicts** (P1 → P2 → P3 → P4) with increasing precision
+4. **Produces a final GPS coordinate** with confidence scoring
+
 ```
-
-The run prints three verdicts without any further interaction:
-**P1 (fast, VLM)** → **P2 (CLIP/Street View)** → **P3 (final, judge)**.
-
-DoorDash posts **4 photos** per drop. This project uses:
-
-| File | Role |
-|------|------|
-| `photo1.jpg` | Promo (ignore) |
-| **`photo2.jpg`** | **Map / warm zone** |
-| **`photo3.jpg`** | **Location clue** |
-| `photo4.jpg` | Promo (ignore) |
-
-**Phone workflow:** paste tweet URL + prompt from [`.cursor/agents/contest-day-prompt.txt`](.cursor/agents/contest-day-prompt.txt) into [cursor.com/agents](https://cursor.com/agents). In parallel, attach photos 2+3 in Cursor chat (Opus 4.8) for a faster first pin.
+Input: 1 map photo + 1 location photo
+Output: Latitude, longitude, confidence, reasoning (< 90s on GPU)
+```
 
 ---
 
 ## Architecture
 
 ```mermaid
-flowchart TB
-  subgraph input [Input]
-    T[Tweet URL or photos]
-    M[Map photo]
-    L[Location photo]
+flowchart LR
+  subgraph Input
+    MAP[Map Photo]
+    LOC[Location Photo]
   end
 
-  subgraph ingest [Optional ingest]
-    I[FxTwitter API → photo1–4]
+  subgraph Region Extraction
+    VLM_MAP[Vision LLM → center, radius]
   end
 
-  subgraph extract [Region]
-    R[Map circle parser — Sonnet 4.6]
+  subgraph Parallel Agents
+    SV[Street View + CLIP<br/>20K frames, 64 workers]
+    VLM[Vision LLM Geoguesser<br/>Scene analysis → coordinates]
   end
 
-  subgraph agents [parallel agents]
-    A1[Street View + CLIP — ON]
-    A4[VLM geoguesser — Opus 4.6 — ON]
-    A5[Landmark + OCR — opt-in]
-    A2[Mapillary + CLIP — opt-in]
-    A3[KartaView + CLIP — opt-in]
+  subgraph Re-Ranking
+    LOFTR[LoFTR Keypoint Matching<br/>Geometric verification]
+    TMPL[Template Matching<br/>Multi-patch NCC]
+    VERIFY[VLM Verifier<br/>Side-by-side comparison]
   end
 
-  subgraph judge [Judge]
-    J[Weighted cluster votes + multi-image Opus 4.6 judge]
+  subgraph Output
+    JUDGE[Judge Agent<br/>Weighted clustering + Opus]
+    OUT[GPS Coordinate<br/>+ confidence + reasoning]
   end
 
-  T --> I --> M
-  I --> L
-  M --> R
-  L --> A1 & A4
-  R --> A1 & A4
-  A1 & A4 --> J
-  J --> O[Final lat/lng + staged JSON]
+  MAP --> VLM_MAP --> SV & VLM
+  LOC --> SV & VLM
+  SV --> LOFTR & TMPL
+  VLM --> VERIFY
+  LOFTR & TMPL & VERIFY --> JUDGE --> OUT
 ```
-
-### Agents
-
-Default contest roster is `streetview,vlm`. The others are opt-in via `--agents`.
-
-| Agent | Default | Method | API |
-|-------|---------|--------|-----|
-| **streetview_matcher** | **ON** | Coarse→fine→refine grid → Google Street View → batched CLIP | `GOOGLE_MAPS_API_KEY` |
-| **vlm_geoguesser** | **ON** | Vision LLM reads scene → lat/lng inside circle | Bedrock / Azure / Gemini |
-| **landmark_ocr** | off | EasyOCR (promo-word blocklist) + vision LLM POI matching | Bedrock / Azure / Gemini |
-| **mapillary_matcher** | off | Bbox street photos → CLIP | `MAPILLARY_ACCESS_TOKEN` |
-| **kartaview_matcher** | off | OpenStreetCam nearby photos → CLIP | None (public API) |
-
-### Street View coarse→fine→refine
-
-| Pass | Grid | Headings | FOV | Budget |
-|------|------|----------|-----|--------|
-| 1 coarse | `max(60, radius/10)` m | 8 (45°) | 120° | 50% of `--sv-max-frames` |
-| 2 fine | 60 m around top-5 coarse hits | 12 (30°) | 90° | remaining |
-| 3 refine | top-3 panos | ±`--sv-refine-span` in `--sv-refine-step` steps + pitch | 90° | ≤50 frames |
-
-Metadata and image fetches run on a shared connection-pooled `httpx.Client` across `--sv-workers` threads; panoramas are deduped by `pano_id`; CLIP embeds are batched (`--clip-batch-size`). No frames are written to disk unless `--sv-cache` (dev only).
-
-### Judge
-
-1. Drop candidates outside the search circle.  
-2. Weighted cluster within **150 m** (VLM ×1.1, Street View ×1.0; flat-CLIP hits down-ranked); agreement boost `1 + 0.2·(agents−1)`.  
-3. Fetch Street View panels for the top 2 candidates **in parallel** and attach them (clue photo + panels) to one multi-image Opus call.  
-4. Out-of-circle LLM answers snap to the top cluster and clamp confidence; `human_review` flips on when confidence < 0.6 or top candidates disagree > 200 m.  
-
-### Vision LLM routing (`llm_vision.py`)
-
-Tiered by step (configurable via env):
-
-| Step | Default model tier |
-|------|-------------------|
-| Map circle | **Sonnet 4.6** |
-| Landmark + OCR | **Sonnet 4.6** |
-| VLM geoguesser | **Opus 4.6** (falls back to Opus 4.5 on Bedrock if 4.6 unavailable) |
-| Judge | **Opus 4.6** (same fallback) |
-
-Set `VISION_LLM_PROVIDER=bedrock` (recommended), `gemini`, `azure_openai`, `openai`, or `anthropic`. See [`.env.example`](.env.example).
 
 ---
 
-## Setup
+## Key Technical Features
 
-**Requires Python 3.10+** (3.11 recommended).
+### Multi-Stage Visual Search (Street View Agent)
+- **Exhaustive grid sampling**: 930+ panorama locations × 24 headings × 4 pitch angles = 20,000 frames
+- **Batched CLIP embeddings** (ViT-bigG-14, 1280-dim) on GPU with `open_clip`
+- **64 concurrent HTTP workers** fetching Street View imagery via connection-pooled `httpx`
+- **Coarse → Fine → Refine** three-pass strategy that narrows from city-scale to meter-scale
 
-```powershell
-cd C:\Users\91767\Projects\doordash-geo-hunt
+### LoFTR Keypoint Matching (Re-Ranker)
+- After CLIP narrows candidates to top-200, LoFTR finds geometrically consistent keypoint correspondences
+- Counts inlier matches after RANSAC — the correct location has 20-50+ inliers while wrong locations have 0-5
+- Provides definitive verification where CLIP's global embeddings cannot distinguish similar textures
 
-# Option A: conda (recommended on Windows)
-conda create -n geo-hunt python=3.11 -y
-conda activate geo-hunt
+### Multi-Patch Template Matching
+- Extracts distinctive patches (corners, fixtures, signage) from the clue photo
+- Runs Normalized Cross-Correlation (NCC) at multiple scales against candidates
+- Identifies specific features (e.g., "this pipe at this brick joint") that CLIP misses entirely
 
-# Option B: venv
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
+### Vision LLM Integration
+- **Multi-provider routing**: AWS Bedrock (Claude Opus/Sonnet), Gemini, Azure OpenAI, Anthropic direct
+- **Tiered model selection**: Sonnet for fast tasks (map parsing, OCR), Opus for reasoning (geolocation, judging)
+- **Automatic fallback chains**: Opus 4 → Opus 3.5, with graceful degradation per-agent
+- **VLM Verifier**: Side-by-side comparison of clue photo vs Street View candidates with structured scoring
 
+### Production-Grade API Management
+- **API key rotation**: Round-robin distribution across multiple keys
+- **URL signing**: HMAC-SHA1 request signing to bypass unsigned quota limits
+- **Retry with exponential backoff**: Automatic recovery from 429/503 with jitter
+- **Quota-aware defaults**: Pipeline tuned to fit within 25,000 unsigned requests per key
+
+### Staged Pipeline with Progressive Results
+- **P1** (2-15s): VLM fast guess — rough area from scene analysis
+- **P2** (20-80s): CLIP Street View match — visual similarity search
+- **P3** (optional): Densification — exhaustive re-search around VLM estimate
+- **P4** (final): Judge — weighted clustering + multi-image VLM verification
+
+---
+
+## Tech Stack
+
+| Layer | Technology |
+|-------|-----------|
+| Visual Similarity | OpenCLIP (ViT-bigG-14), cosine similarity, batched GPU inference |
+| Feature Matching | LoFTR (Kornia), RANSAC inlier counting |
+| Template Matching | OpenCV NCC, multi-scale pyramid, patch extraction |
+| Vision LLMs | Claude Opus/Sonnet via AWS Bedrock, structured JSON output |
+| Image Processing | PIL, OpenCV, NumPy, scikit-image |
+| OCR | EasyOCR (scene text for landmark identification) |
+| Concurrency | ThreadPoolExecutor (64 workers), async-style staged pipeline |
+| HTTP | httpx (connection pooling, retry, timeouts) |
+| CLI | argparse with rich terminal output |
+| Testing | pytest (regression suite for all components) |
+
+---
+
+## Quick Start
+
+```bash
+# Clone and install
+git clone https://github.com/Eswar-deep/doordash-geo-hunt.git
+cd doordash-geo-hunt
 pip install -e .
-copy .env.example .env
-# Edit .env with your API keys
+
+# Configure API keys
+cp .env.example .env
+# Edit .env: GOOGLE_MAPS_API_KEY, AWS_BEARER_TOKEN_BEDROCK, VISION_LLM_PROVIDER=bedrock
+
+# Verify setup
+python scripts/test_apis.py
+
+# Run on a tweet
+python cli.py ingest "https://x.com/DoorDash/status/TWEET_ID" \
+  --out samples/live --run \
+  --agents streetview,vlm --staged --staged-parallel \
+  --sv-workers 64
 ```
 
-Verify keys:
+### Run with Local Photos
 
-```powershell
-python scripts/test_apis.py
+```bash
+python cli.py run \
+  --map samples/miami-drop1/photo2.jpg \
+  --location samples/miami-drop1/photo3.jpg \
+  --city Miami \
+  --output-json output/result.json
+```
+
+### GPU-Accelerated (Colab / Cloud)
+
+```python
+# In a Colab notebook with GPU runtime:
+!git clone https://github.com/Eswar-deep/doordash-geo-hunt.git
+%cd doordash-geo-hunt
+!pip install -e . -q
+
+import os
+os.environ["VISION_LLM_PROVIDER"] = "bedrock"
+os.environ["GOOGLE_MAPS_API_KEY"] = "YOUR_KEY"
+os.environ["AWS_BEARER_TOKEN_BEDROCK"] = "YOUR_TOKEN"
+
+!python cli.py prewarm  # Load CLIP weights to GPU
+!python cli.py ingest "https://x.com/DoorDash/status/TWEET_ID" \
+  --out samples/live --run --agents streetview,vlm --staged --sv-workers 64
 ```
 
 ---
 
 ## Configuration
 
-Copy [`.env.example`](.env.example) → `.env`. Minimum for Bedrock pipeline:
+### Required API Keys
 
-```env
-VISION_LLM_PROVIDER=bedrock
-GOOGLE_MAPS_API_KEY=...
-MAPILLARY_ACCESS_TOKEN=...
-AWS_BEARER_TOKEN_BEDROCK=...
-AWS_BEDROCK_REGION=us-east-1
-AWS_BEDROCK_SONNET_MODEL_ID=us.anthropic.claude-sonnet-4-6
-AWS_BEDROCK_OPUS_MODEL_ID=us.anthropic.claude-opus-4-6
-AWS_BEDROCK_OPUS_FALLBACK_MODEL_ID=us.anthropic.claude-opus-4-5-20251101-v1:0
-```
+| Key | Purpose | Provider |
+|-----|---------|----------|
+| `GOOGLE_MAPS_API_KEY` | Street View imagery (20K frames/run) | Google Cloud |
+| `AWS_BEARER_TOKEN_BEDROCK` | Vision LLM inference (Opus + Sonnet) | AWS Bedrock |
 
-| Key | Used by |
+### Optional Keys
+
+| Key | Purpose |
 |-----|---------|
-| `GOOGLE_MAPS_API_KEY` | Street View grid, judge metadata |
-| `MAPILLARY_ACCESS_TOKEN` | Mapillary CLIP agent |
-| `AWS_BEARER_TOKEN_BEDROCK` | All vision LLM steps (when `VISION_LLM_PROVIDER=bedrock`) |
-| KartaView | No key — public API |
-| `GEMINI_API_KEY` | Alternative vision provider |
-| `AZURE_OPENAI_*` | Alternative vision provider (deploy Sonnet + Opus) |
+| `MAPILLARY_ACCESS_TOKEN` | Mapillary street-level imagery agent |
+| `GOOGLE_MAPS_SIGNING_SECRET` | URL signing (removes 25K unsigned limit) |
+| `GEMINI_API_KEY` | Alternative vision LLM provider |
 
-**Never commit `.env`** — it is gitignored.
+### Cost Profile (Single Run)
 
----
-
-## Run
-
-### Tweet ingest + pipeline (one command)
-
-```powershell
-python cli.py ingest "https://x.com/DoorDash/status/TWEET_ID" `
-  --out samples/live-drop `
-  --run --tweet-id `
-  --agents streetview,vlm --staged --staged-parallel
-```
-
-Uses **FxTwitter / VxTwitter API** — does not scrape x.com in a browser. Photos are
-downloaded in parallel (`--ingest-workers`) with retry, then classified (map vs clue).
-
-### Ingest only
-
-```powershell
-python cli.py ingest "https://x.com/DoorDash/status/TWEET_ID" --out samples/live-drop
-```
-
-### Manual photos
-
-```powershell
-python cli.py run `
-  --map samples/miami-drop1/photo2.jpg `
-  --location samples/miami-drop1/photo3.jpg `
-  --city Miami `
-  --output-json output/miami-drop1.json
-```
-
-### Skip map LLM (manual circle)
-
-```powershell
-python cli.py run `
-  --map samples/miami-drop1/photo2.jpg `
-  --location samples/miami-drop1/photo3.jpg `
-  --center-lat 25.814 `
-  --center-lng -80.197 `
-  --radius-m 800 `
-  --output-json output/manual.json
-```
-
-Legacy syntax still works: `python cli.py --map ... --location ...`
-
-### Prewarm (morning of contest)
-
-```powershell
-python cli.py prewarm          # loads CLIP + torch
-python cli.py prewarm --ocr    # also warms EasyOCR (only if using --agents landmark)
-```
-
-`prewarm` loads model weights only. It does **not** pre-cache Street View images — the
-drop circle is unknown until the tweet ingests and changes daily.
-
-### CLI reference (run / ingest --run)
-
-| Flag | Default | Purpose |
-|------|---------|---------|
-| `--agents` | `streetview,vlm` | Comma list: `streetview,vlm,landmark,mapillary,kartaview` |
-| `--staged` / `--no-staged` | on | Emit P1/P2/P3 verdicts automatically |
-| `--staged-parallel` / `--no-staged-parallel` | on | VLM + Street View start together |
-| `--stage {1,2,3}` | – | Debug a single stage (1=VLM, 2=+CLIP, 3=full) |
-| `--sv-workers` | `min(32, cpu×4)` | Street View HTTP/CLIP parallelism |
-| `--clip-batch-size` | 32 | CLIP embed batch size |
-| `--ingest-workers` | 4 | Parallel photo downloads |
-| `--judge-workers` | 4 | Parallel judge panel fetch |
-| `--sv-coarse-fine` / `--no-sv-coarse-fine` | on | 3-pass coarse→fine→refine |
-| `--sv-headings-coarse` / `--sv-headings-fine` | 8 / 12 | Headings per pass |
-| `--sv-headings` / `--sv-heading-step` | – | Override heading count (coarse-fine off) |
-| `--sv-refine-headings` / `--no-sv-refine-headings` | on | Pass-3 heading+pitch sweep |
-| `--sv-refine-span` / `--sv-refine-step` | 30 / 10 | Refine sweep window (degrees) |
-| `--sv-pitch-refine` | `0,-10` | Pitches for the refine pass |
-| `--sv-max-frames` | 1000 | Hard cap on fetched frames |
-| `--sv-step-m` | – | Override pass-2 grid step |
-| `--sv-cache` | off | Dev only: write SV frames to disk |
-| `--agent-timeout-streetview/vlm/landmark` | 900/90/120 | Per-agent timeout (s) |
+| Configuration | API Requests | Approx. Cost |
+|--------------|-------------|--------------|
+| Default (no densify) | ~20,200 | ~$14 Street View + ~$1 LLM |
+| With `--densify` | ~45,000 | ~$32 Street View + ~$2 LLM |
 
 ---
 
-## Contest day (phone + cloud)
+## CLI Reference
 
-1. **Push repo to GitHub** and connect it in [Cursor Cloud Agents](https://cursor.com/dashboard).  
-2. Add **cloud secrets** — see [`.cursor/agents/cloud-secrets-setup.md`](.cursor/agents/cloud-secrets-setup.md) (dashboard env vars, **not** `.env`).  
-3. Verify in a cloud agent: `python3 scripts/test_apis.py` → Google + Bedrock OK.  
-4. On [cursor.com/agents](https://cursor.com/agents), start an agent on this repo.  
-5. Paste [`.cursor/agents/contest-day-prompt.txt`](.cursor/agents/contest-day-prompt.txt) with the tweet URL.  
-6. **In parallel:** Cursor chat (Opus 4.8) with saved photos 2+3 for a fast pin.
+```bash
+python cli.py run [OPTIONS]       # Run pipeline on local photos
+python cli.py ingest URL [--run]  # Fetch tweet photos, optionally run
+python cli.py prewarm             # Pre-load CLIP/torch weights
+```
 
-Optional webhook automation: [`.cursor/automation/door-dash-drop.json`](.cursor/automation/door-dash-drop.json)
+### Key Flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--agents` | `streetview,vlm` | Active agents (also: `landmark,mapillary,kartaview`) |
+| `--densify` | off | Enable VLM-guided densification (25K+ extra requests) |
+| `--sv-workers` | 64 | Concurrent Street View fetch threads |
+| `--sv-max-frames` | 20000 | Maximum frames in broad sweep |
+| `--staged` | on | Emit progressive P1/P2/P3/P4 verdicts |
+| `--staged-parallel` | on | Run VLM + Street View concurrently |
 
 ---
 
-## Output
-
-Staged runs print **three** verdict blocks (P1 fast / P2 CLIP / P3 final) and write four JSON files:
-
-```
-output/<id>_p1_fast.json     # VLM-only fast pin (provisional)
-output/<id>_p2_clip.json     # VLM + Street View interim (provisional)
-output/<id>_p3_final.json    # judged final
-output/<id>.json             # copy of the final verdict
-```
-
-Each verdict carries `stage`, `provisional`, `agents_pending`, `human_review`,
-`low_confidence`, `agreement_votes`, `alternatives`, and a `maps_url`.
+## Output Format
 
 ```json
 {
-  "stage": "p3_final",
+  "stage": "p4_final",
   "provisional": false,
   "human_review": false,
-  "region": { "center_lat": 25.814, "center_lng": -80.197, "radius_m": 800 },
-  "agents": [ ... ],
-  "verdict": { "lat": 25.8142, "lng": -80.1969, "confidence": 0.88, "agreement_votes": 2 }
+  "region": {
+    "center_lat": 40.744,
+    "center_lng": -74.028,
+    "radius_m": 700
+  },
+  "verdict": {
+    "lat": 40.74182,
+    "lng": -74.02898,
+    "confidence": 0.789,
+    "agent": "streetview_matcher",
+    "reasoning": "VLM-verified: score=72/100. Brick building with matching mortar style and downspout placement."
+  },
+  "maps_url": "https://www.google.com/maps?q=40.74182,-74.02898"
 }
 ```
 
 ---
 
-## Samples
+## Project Structure
 
-| Folder | Description |
-|--------|-------------|
-| `samples/miami-drop1/` | Design District drop (tweet `2067973011781607579`) |
-| `samples/miami-drop2/` | Brickell drop (tweet `2068028794883997721`) |
-| `samples/live-drop/` | Default output for contest-day ingest |
-
-Test on Miami drop 1:
-
-```powershell
-python cli.py run `
-  --map samples/miami-drop1/photo2.jpg `
-  --location samples/miami-drop1/photo3.jpg `
-  --city Miami `
-  --output-json output/2067973011781607579.json
+```
+cli.py                                  # Entry point
+src/doordash_geo_hunt/
+├── orchestrator.py                     # Staged parallel pipeline + judge coordination
+├── pipeline_context.py                 # Shared context (region, images, clients)
+├── streetview.py                       # Google SV client (key rotation, signing, retry)
+├── map_extractor.py                    # Map photo → SearchRegion (Vision LLM)
+├── llm_vision.py                       # Multi-provider VLM router + tiered models
+├── preprocessing.py                    # Background isolation, enhancement
+├── twitter_fetcher.py                  # Tweet → photos (FxTwitter API)
+├── geo.py                              # Haversine, grid generation, clustering
+├── models.py                           # Pydantic models (candidates, verdicts)
+├── agents/
+│   ├── visual_matcher.py               # CLIP-based matching (coarse→fine→refine)
+│   ├── vlm_agents.py                   # VLM geoguesser + landmark/OCR agent
+│   └── vlm_verifier.py                 # Side-by-side VLM verification
+├── matching/
+│   ├── clip_matcher.py                 # Batched CLIP embeddings (GPU)
+│   ├── feature_matcher.py             # LoFTR keypoint matching + RANSAC
+│   └── template_matcher.py            # Multi-patch NCC template matching
+├── judge/
+│   └── judge_agent.py                  # Weighted clustering + multi-image judge
+├── mapillary.py                        # Mapillary API client
+└── kartaview.py                        # KartaView/OpenStreetCam client
+tests/
+└── test_pipeline.py                    # Regression tests (pytest)
+scripts/
+├── test_apis.py                        # API key smoke tests
+└── probe_models.py                     # Bedrock model availability check
+samples/
+├── miami-drop1/                        # Test case: Design District
+└── miami-drop2/                        # Test case: Brickell
 ```
 
 ---
 
-## Scripts
+## Testing
 
-| Script | Purpose |
-|--------|---------|
-| `scripts/test_apis.py` | Smoke-test all API keys |
-| `scripts/probe_models.py` | Test Bedrock vision models |
-| `scripts/probe_bedrock_models.py` | Quick Bedrock model ID probe |
-| `scripts/trigger-drop-webhook.ps1` | POST tweet URL to automation webhook |
-
----
-
-## Tests
-
-```powershell
+```bash
 pip install -e ".[dev]"
 pytest -q
 ```
 
-Covers heading propagation, percentile confidence, OCR blocklist, region filtering,
-pano dedup, preprocessing shape hardening, photo classification, and city parsing.
+Test coverage includes: heading propagation, percentile confidence mapping, OCR blocklist filtering, region containment, panorama deduplication, image preprocessing (shape handling), photo classification, and city name parsing.
 
 ---
 
-## Known limitations
+## Design Decisions
 
-- **Opus 4.6** may not be available on all Bedrock accounts — auto-falls back to Opus 4.5.  
-- **Mapillary / KartaView** are off by default (flaky CDNs); enable via `--agents`.  
-- **CLIP precision ceiling** = panorama spacing. CLIP picks the best-matching pano; the refine pass (heading+pitch) tightens the aim but cannot triangulate a sub-pano point. Weak/generic clues → `human_review` is flagged rather than a falsely confident pin.  
-- **Tweet ingest** requires FxTwitter/VxTwitter; if down, save photos manually from the X app and use `python cli.py run --map ... --location ...`.  
-- **Gemini free tier** may hit quota (429) — use Bedrock as primary (`VISION_LLM_PROVIDER=bedrock`).
+1. **CLIP as first-pass, not final answer** — Global embeddings excel at narrowing 20K frames to 200 candidates but cannot distinguish visually similar locations (e.g., many brick walls in a city). LoFTR and template matching provide geometric verification.
 
----
+2. **VLM as parallel oracle, not sequential** — The VLM geoguesser runs concurrently with Street View search, providing an independent estimate that guides densification without blocking the CLIP path.
 
-## Cost tips
+3. **Densify disabled by default** — The 25K API request budget is consumed entirely by the broad sweep. Densification (another 25K) is opt-in because in testing, the broad sweep + VLM verification produced more accurate results than brute-force densification on ambiguous textures.
 
-- Use `--center-lat/lng/radius` to skip map vision LLM call  
-- Increase Street View grid step in `streetview.py` to reduce API calls  
-- Sonnet for map/OCR + Opus for geoguesser/judge is the default cost/quality balance  
+4. **Staged output for time-sensitive use** — The contest has a race element. P1 arrives in 2-15s (VLM guess), P2 in 20-80s (CLIP match). Users can act on early verdicts while waiting for refinement.
+
+5. **Multi-provider LLM routing** — No single provider is reliable enough for a time-critical contest. Automatic fallback chains (Opus 4 → 3.5, Bedrock → Gemini → Azure) ensure the pipeline always completes.
 
 ---
 
-## Project layout
+## Limitations
 
-```
-cli.py                          # Entry point (run / ingest / prewarm)
-src/doordash_geo_hunt/
-  orchestrator.py               # Staged parallel runner + judge + staged JSON
-  pipeline_context.py           # PipelineContext + StreetViewConfig
-  twitter_fetcher.py            # Tweet → photo1–4 (parallel) + classifier
-  llm_vision.py                 # Tiered vision LLM router + multi-image
-  map_extractor.py              # Map circle → SearchRegion
-  streetview.py                 # 3-phase parallel Street View client
-  agents/visual_matcher.py      # CLIP matchers (coarse→fine→refine)
-  agents/vlm_agents.py          # Geoguesser + landmark/OCR
-  judge/judge_agent.py          # Weighted cluster + multi-image judge
-  matching/clip_matcher.py      # Local CLIP embeddings (batched)
-tests/                          # Regression tests (pytest)
-.cursor/agents/                 # Contest-day cloud agent prompt
-.cursor/automation/             # Webhook automation prefill
-samples/                        # Miami test drops
-```
+- **Street View coverage gaps**: Some locations have no nearby panoramas (alleys, private property)
+- **Repetitive textures**: Plain brick walls, chain-link fences, and generic storefronts produce many CLIP false positives — mitigated but not eliminated by LoFTR/template matching
+- **API quota**: A single Google Maps key supports ~25K unsigned requests; densification requires multiple keys or URL signing
+- **VLM hallucination**: Vision LLMs occasionally confuse similar neighborhoods; the judge agent cross-checks against visual evidence
 
 ---
 
 ## License
 
-Private / personal use. API keys and contest photos are your responsibility.
+MIT License. API keys and contest photos are your responsibility.

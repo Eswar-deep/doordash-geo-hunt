@@ -5,15 +5,21 @@ __pycache__/
 venv/
 .env
 *.egg-info/
+dist/
+build/
 
 # Caches / outputs
 .cache/
 output/
 samples/*/cache/
 
-# ML
+# ML weights
 *.pt
 *.onnx
+
+# IDE
+.vscode/
+.idea/
 
 # OS
 .DS_Store

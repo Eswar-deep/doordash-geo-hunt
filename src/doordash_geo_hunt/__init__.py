@@ -1,3 +1,7 @@
-"""DoorDash FIFA ticket drop geolocation solver."""
+"""Multi-agent visual geolocation pipeline.
 
-__version__ = "0.1.0"
+Combines CLIP visual search, LoFTR keypoint matching, multi-patch template
+matching, and Vision LLMs to identify precise GPS coordinates from photos.
+"""
+
+__version__ = "1.0.0"
